@@ -1,0 +1,70 @@
+[
+  {
+    "id": "stream-3e752544",
+    "title": "Oru Maalai x Beggin\u2019 (Tamil Remix) | 7ymphony",
+    "artist": "7ymphony",
+    "duration": 184.0,
+    "thumbnail": "https://i.ytimg.com/vi/SrvuVXF35bc/maxresdefault.jpg",
+    "audio_url": "/api/stream?url=https%3A//youtu.be/SrvuVXF35bc%3Fsi%3DOPO5F3S4tEGlbu9l",
+    "source_url": "https://youtu.be/SrvuVXF35bc?si=OPO5F3S4tEGlbu9l",
+    "filesize": 0,
+    "is_stream": true,
+    "created_at": 1789585923.058903
+  },
+  {
+    "id": "stream-572c14c0",
+    "title": "audio_c8c8a73467.mp3",
+    "artist": "Direct Audio Stream",
+    "duration": 180.0,
+    "thumbnail": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80",
+    "audio_url": "/api/stream?url=https%3A//cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3",
+    "source_url": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3",
+    "filesize": 0,
+    "is_stream": true,
+    "created_at": 1789585799.0792296
+  },
+  {
+    "id": "898526ee",
+    "title": "Oru Maalai x Beggin\u2019 (Tamil Remix) | 7ymphony",
+    "artist": "7ymphony",
+    "duration": 184.0,
+    "thumbnail": "https://i.ytimg.com/vi/SrvuVXF35bc/maxresdefault.jpg",
+    "audio_url": "/storage/audio/898526ee.webm",
+    "source_url": "https://youtu.be/SrvuVXF35bc?si=OPO5F3S4tEGlbu9l",
+    "filesize": 2913557,
+    "created_at": 1789584682.6720612
+  },
+  {
+    "id": "demo-1",
+    "title": "Lofi Chill Beat (Aesthetic Reverie)",
+    "artist": "Free Music Archive",
+    "duration": 142.0,
+    "thumbnail": "https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=600&auto=format&fit=crop&q=80",
+    "audio_url": "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3",
+    "source_url": "https://pixabay.com/music/beats-lofi-study-112191/",
+    "filesize": 2400000,
+    "created_at": 1789580887.7782757
+  },
+  {
+    "id": "demo-2",
+    "title": "Midnight City Lights (Synthwave)",
+    "artist": "Neon Wave Project",
+    "duration": 185.0,
+    "thumbnail": "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=600&auto=format&fit=crop&q=80",
+    "audio_url": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3?filename=synthwave-80s-110045.mp3",
+    "source_url": "https://pixabay.com/music/synthwave-80s-110045/",
+    "filesize": 3100000,
+    "created_at": 1789582687.7782757
+  },
+  {
+    "id": "demo-3",
+    "title": "Cosmic Acoustic Journey",
+    "artist": "Acoustic Horizon",
+    "duration": 164.0,
+    "thumbnail": "https://images.unsplash.com/photo-1445985543470-41fdd6ce388d?w=600&auto=format&fit=crop&q=80",
+    "audio_url": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=acoustic-guitars-ambient-chillout-14305.mp3",
+    "source_url": "https://pixabay.com/music/acoustic-guitars-ambient-chillout-14305/",
+    "filesize": 2750000,
+    "created_at": 1789583587.7782757
+  }
+]

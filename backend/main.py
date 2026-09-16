@@ -1,0 +1,457 @@
+import os
+import sys
+import json
+import uuid
+import re
+import time
+import requests
+from pathlib import Path
+from typing import Optional, List
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import yt_dlp
+import urllib.parse
+
+BASE_DIR = Path(__file__).resolve().parent
+STORAGE_DIR = BASE_DIR / "storage"
+AUDIO_DIR = STORAGE_DIR / "audio"
+THUMB_DIR = STORAGE_DIR / "thumbnails"
+METADATA_FILE = STORAGE_DIR / "tracks.json"
+CONFIG_FILE = STORAGE_DIR / "config.json"
+
+AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+THUMB_DIR.mkdir(parents=True, exist_ok=True)
+
+app = FastAPI(title="Cloud Music Player & Audio Downloader API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/storage", StaticFiles(directory=str(STORAGE_DIR)), name="storage")
+
+# Models
+class ExtractRequest(BaseModel):
+    url: str
+    custom_title: Optional[str] = None
+    custom_artist: Optional[str] = None
+
+class PreviewRequest(BaseModel):
+    url: str
+
+class Track(BaseModel):
+    id: str
+    title: str
+    artist: str
+    duration: float
+    thumbnail: str
+    audio_url: str
+    source_url: str
+    filesize: Optional[int] = 0
+    created_at: float
+
+class StorageConfig(BaseModel):
+    provider: str = "local" # local | supabase | drive
+    supabase_url: Optional[str] = ""
+    supabase_key: Optional[str] = ""
+    supabase_bucket: Optional[str] = "music"
+
+def load_tracks() -> List[dict]:
+    if not METADATA_FILE.exists():
+        initial_tracks = [
+            {
+                "id": "demo-1",
+                "title": "Lofi Chill Beat (Aesthetic Reverie)",
+                "artist": "Free Music Archive",
+                "duration": 142.0,
+                "thumbnail": "https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=600&auto=format&fit=crop&q=80",
+                "audio_url": "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3",
+                "source_url": "https://pixabay.com/music/beats-lofi-study-112191/",
+                "filesize": 2400000,
+                "created_at": time.time() - 3600
+            },
+            {
+                "id": "demo-2",
+                "title": "Midnight City Lights (Synthwave)",
+                "artist": "Neon Wave Project",
+                "duration": 185.0,
+                "thumbnail": "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=600&auto=format&fit=crop&q=80",
+                "audio_url": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3?filename=synthwave-80s-110045.mp3",
+                "source_url": "https://pixabay.com/music/synthwave-80s-110045/",
+                "filesize": 3100000,
+                "created_at": time.time() - 1800
+            },
+            {
+                "id": "demo-3",
+                "title": "Cosmic Acoustic Journey",
+                "artist": "Acoustic Horizon",
+                "duration": 164.0,
+                "thumbnail": "https://images.unsplash.com/photo-1445985543470-41fdd6ce388d?w=600&auto=format&fit=crop&q=80",
+                "audio_url": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=acoustic-guitars-ambient-chillout-14305.mp3",
+                "source_url": "https://pixabay.com/music/acoustic-guitars-ambient-chillout-14305/",
+                "filesize": 2750000,
+                "created_at": time.time() - 900
+            }
+        ]
+        save_tracks(initial_tracks)
+        return initial_tracks
+
+    try:
+        with open(METADATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_tracks(tracks: List[dict]):
+    with open(METADATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(tracks, f, indent=2)
+
+def load_config() -> dict:
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "provider": "local",
+        "supabase_url": os.getenv("SUPABASE_URL", ""),
+        "supabase_key": os.getenv("SUPABASE_KEY", ""),
+        "supabase_bucket": os.getenv("SUPABASE_BUCKET", "music")
+    }
+
+def save_config_file(cfg: dict):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+def upload_to_supabase(file_path: Path, filename: str, content_type: str = "audio/mpeg") -> Optional[str]:
+    cfg = load_config()
+    supa_url = cfg.get("supabase_url")
+    supa_key = cfg.get("supabase_key")
+    bucket = cfg.get("supabase_bucket", "music")
+
+    if not supa_url or not supa_key:
+        return None
+
+    try:
+        clean_supa_url = supa_url.rstrip("/")
+        endpoint = f"{clean_supa_url}/storage/v1/object/{bucket}/{filename}"
+        headers = {
+            "Authorization": f"Bearer {supa_key}",
+            "apikey": supa_key,
+            "Content-Type": content_type
+        }
+        with open(file_path, "rb") as f:
+            resp = requests.post(endpoint, headers=headers, data=f)
+            if resp.status_code in (200, 201):
+                return f"{clean_supa_url}/storage/v1/object/public/{bucket}/{filename}"
+            else:
+                print("Supabase upload failed:", resp.status_code, resp.text)
+                return None
+    except Exception as e:
+        print("Supabase upload exception:", e)
+        return None
+
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok", "timestamp": time.time()}
+
+@app.get("/api/config")
+def get_config():
+    return load_config()
+
+@app.post("/api/config")
+def update_config(config: StorageConfig):
+    cfg_data = config.model_dump()
+    save_config_file(cfg_data)
+    return {"message": "Configuration updated successfully", "config": cfg_data}
+
+@app.get("/api/tracks")
+def get_tracks():
+    tracks = load_tracks()
+    return {"tracks": tracks}
+
+@app.delete("/api/tracks/{track_id}")
+def delete_track(track_id: str):
+    tracks = load_tracks()
+    track_to_delete = None
+    remaining_tracks = []
+    
+    for t in tracks:
+        if t["id"] == track_id:
+            track_to_delete = t
+        else:
+            remaining_tracks.append(t)
+            
+    if not track_to_delete:
+        raise HTTPException(status_code=404, detail="Track not found")
+        
+    save_tracks(remaining_tracks)
+    
+    # Try removing local file if it exists
+    audio_url = track_to_delete.get("audio_url", "")
+    if "/storage/audio/" in audio_url:
+        filename = audio_url.split("/storage/audio/")[-1]
+        local_path = AUDIO_DIR / filename
+        if local_path.exists():
+            try:
+                local_path.unlink()
+            except Exception as e:
+                print(f"Could not delete {local_path}: {e}")
+
+    return {"message": "Track deleted successfully", "id": track_id}
+
+@app.post("/api/preview")
+def preview_url(req: PreviewRequest):
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Empty URL provided")
+
+    # Check direct audio link
+    audio_extensions = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+    clean_url = url.split("?")[0].lower()
+    if any(clean_url.endswith(ext) for ext in audio_extensions):
+        filename = Path(clean_url).name
+        return {
+            "title": filename,
+            "artist": "Direct Audio Stream",
+            "duration": 0,
+            "thumbnail": "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=600&auto=format&fit=crop&q=80",
+            "source_url": url,
+            "direct": True
+        }
+
+    # yt-dlp metadata extraction
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": False,
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get("title", "Unknown Title")
+            artist = info.get("artist") or info.get("uploader") or info.get("channel") or "Unknown Artist"
+            duration = info.get("duration", 0)
+            thumbnail = info.get("thumbnail") or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80"
+            return {
+                "title": title,
+                "artist": artist,
+                "duration": duration,
+                "thumbnail": thumbnail,
+                "source_url": url,
+                "direct": False
+            }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to inspect URL: {str(e)}")
+
+@app.post("/api/extract")
+def extract_and_download(req: ExtractRequest):
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Empty URL provided")
+
+    track_id = str(uuid.uuid4())[:8]
+    output_filename = f"{track_id}.mp3"
+    local_output_path = AUDIO_DIR / output_filename
+    
+    title = req.custom_title or ""
+    artist = req.custom_artist or ""
+    duration = 0.0
+    thumbnail = ""
+    source_url = url
+    filesize = 0
+
+    audio_extensions = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+    clean_url = url.split("?")[0].lower()
+
+    # Direct audio file download branch
+    if any(clean_url.endswith(ext) for ext in audio_extensions):
+        try:
+            resp = requests.get(url, stream=True, timeout=30)
+            resp.raise_for_status()
+            with open(local_output_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+            
+            filesize = local_output_path.stat().st_size
+            title = title or Path(clean_url).stem
+            artist = artist or "Direct Audio Link"
+            duration = 180.0 # Default estimation if header omitted
+            thumbnail = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80"
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to download direct audio: {str(e)}")
+
+    else:
+        # yt-dlp audio download
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": str(AUDIO_DIR / f"{track_id}.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = title or info.get("title", "Unknown Title")
+                artist = artist or info.get("artist") or info.get("uploader") or info.get("channel") or "Unknown Artist"
+                duration = float(info.get("duration", 0) or 0)
+                thumbnail = info.get("thumbnail") or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80"
+                
+                # Check what file was written
+                candidates = list(AUDIO_DIR.glob(f"{track_id}.*"))
+                if candidates:
+                    chosen_file = candidates[0]
+                    filesize = chosen_file.stat().st_size
+                    output_filename = chosen_file.name
+                    local_output_path = chosen_file
+                else:
+                    raise Exception("Audio file could not be generated by extractor")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to extract audio with yt-dlp: {str(e)}")
+
+    # Storage decision: Try Supabase if configured, otherwise fallback to local server stream
+    cfg = load_config()
+    final_audio_url = f"/storage/audio/{output_filename}"
+    
+    if cfg.get("provider") == "supabase" and cfg.get("supabase_url") and cfg.get("supabase_key"):
+        supa_url = upload_to_supabase(local_output_path, output_filename)
+        if supa_url:
+            final_audio_url = supa_url
+
+    new_track = {
+        "id": track_id,
+        "title": title,
+        "artist": artist,
+        "duration": duration,
+        "thumbnail": thumbnail,
+        "audio_url": final_audio_url,
+        "source_url": source_url,
+        "filesize": filesize,
+        "created_at": time.time()
+    }
+
+    current_tracks = load_tracks()
+    current_tracks.insert(0, new_track)
+    save_tracks(current_tracks)
+
+    return {"message": "Track downloaded and saved successfully", "track": new_track}
+
+# In-memory stream URL cache to avoid repeated extraction calls
+STREAM_CACHE = {}
+
+@app.get("/api/stream")
+def stream_audio(url: str = Query(...)):
+    url = url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Missing URL")
+
+    # If direct mp3/wav audio link, redirect straight to it
+    audio_extensions = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+    clean_url = url.split("?")[0].lower()
+    if any(clean_url.endswith(ext) for ext in audio_extensions):
+        return RedirectResponse(url, status_code=302)
+
+    # Check cache (valid for 2 hours)
+    now = time.time()
+    if url in STREAM_CACHE:
+        cached_url, expire_at = STREAM_CACHE[url]
+        if now < expire_at:
+            return RedirectResponse(cached_url, status_code=302)
+
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            direct_stream = info.get("url")
+            if not direct_stream and "formats" in info:
+                audio_formats = [f for f in info["formats"] if f.get("vcodec") == "none" and f.get("url")]
+                if audio_formats:
+                    direct_stream = audio_formats[-1].get("url")
+                else:
+                    direct_stream = info["formats"][-1].get("url")
+
+            if not direct_stream:
+                raise Exception("Could not resolve media stream URL")
+
+            STREAM_CACHE[url] = (direct_stream, now + 7200)
+            return RedirectResponse(direct_stream, status_code=302)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to resolve live audio stream: {str(e)}")
+
+@app.post("/api/bookmark")
+def bookmark_stream(req: ExtractRequest):
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Empty URL provided")
+
+    track_id = f"stream-{str(uuid.uuid4())[:8]}"
+    title = req.custom_title or ""
+    artist = req.custom_artist or ""
+    duration = 0.0
+    thumbnail = ""
+
+    audio_extensions = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+    clean_url = url.split("?")[0].lower()
+
+    if any(clean_url.endswith(ext) for ext in audio_extensions):
+        title = title or Path(clean_url).stem
+        artist = artist or "Direct Audio Stream"
+        duration = 180.0
+        thumbnail = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80"
+    else:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": False,
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = title or info.get("title", "Unknown Title")
+                artist = artist or info.get("artist") or info.get("uploader") or info.get("channel") or "Unknown Artist"
+                duration = float(info.get("duration", 0) or 0)
+                thumbnail = info.get("thumbnail") or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80"
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to inspect YouTube URL: {str(e)}")
+
+    encoded_url = urllib.parse.quote(url)
+    stream_endpoint = f"/api/stream?url={encoded_url}"
+
+    new_track = {
+        "id": track_id,
+        "title": title,
+        "artist": artist,
+        "duration": duration,
+        "thumbnail": thumbnail,
+        "audio_url": stream_endpoint,
+        "source_url": url,
+        "filesize": 0,
+        "is_stream": True,
+        "created_at": time.time()
+    }
+
+    current_tracks = load_tracks()
+    current_tracks.insert(0, new_track)
+    save_tracks(current_tracks)
+
+    return {"message": "Stream bookmarked successfully", "track": new_track}
+
