@@ -235,6 +235,7 @@ This project was built from scratch in a single conversation with the following 
 9. **UI Redesign & Live Stream Cleanup** — Redesigned into minimal dark layout with `#C8FF00` lime accent, mobile-first responsive 2-panel/sheet design, and removed live stream feature in favor of pure URL downloader.
 10. **Unified Single-Service Render Deployment** — Frontend packaged directly into FastAPI backend using a multi-stage `Dockerfile` and `render.yaml`. FastAPI serves the Vite `dist/` bundle on `/` while serving API endpoints on `/api/*`. One URL, one Render deployment.
 11. **Option B Supabase Cloud Sync Configured** — Integrated Supabase storage bucket `music` and metadata backup/database synchronization. Credentials configured in `backend/.env` and `config.json`. Audio uploads stream directly over Supabase global CDN public URLs and local temporary audio is auto-cleaned. Created `supabase_schema.sql` for PostgreSQL table setup.
+12. **YouTube Bot Challenge Fix on Cloud Servers** — Resolved datacenter IP blocks on Render by: (1) Adding YouTube oEmbed API for instant, resilient preview/metadata inspection without bot challenges; (2) Configuring yt-dlp with mobile player clients (`android`, `ios`, `mweb`, `web`); (3) Adding optional YouTube Cookies (Netscape format) support via UI settings modal and `YOUTUBE_COOKIES` environment variable.
 
 ---
 
