@@ -4,6 +4,7 @@ import json
 import uuid
 import re
 import time
+import shutil
 import requests
 from pathlib import Path
 from typing import Optional, List
@@ -47,16 +48,24 @@ def get_cookie_file_path() -> Optional[str]:
     return None
 
 def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
+    js_runtimes = {}
+    if shutil.which("deno"):
+        js_runtimes["deno"] = {}
+    if shutil.which("node"):
+        js_runtimes["node"] = {}
+
     opts = {
         "quiet": True,
         "no_warnings": True,
-        "js_runtimes": {"node": {}},
         "remote_components": {"ejs:github": {}},
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
         }
     }
+    if js_runtimes:
+        opts["js_runtimes"] = js_runtimes
+
     cookie_path = get_cookie_file_path()
     if cookie_path:
         opts["cookiefile"] = cookie_path

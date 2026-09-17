@@ -1,12 +1,16 @@
 # Dockerfile for Free Cloud Deployment (Hugging Face Spaces, Render, Fly.io, or Koyeb)
 FROM python:3.11-slim
 
-# Install system dependencies including ffmpeg and nodejs for audio transcoding & yt-dlp challenge solving
+# Copy official standalone Deno binary (recommended by yt-dlp for JS challenges)
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
+# Install system dependencies: ffmpeg, ca-certificates, curl, and Node.js 22 LTS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    nodejs \
     ca-certificates \
     curl \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
