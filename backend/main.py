@@ -25,9 +25,82 @@ AUDIO_DIR = STORAGE_DIR / "audio"
 THUMB_DIR = STORAGE_DIR / "thumbnails"
 METADATA_FILE = STORAGE_DIR / "tracks.json"
 CONFIG_FILE = STORAGE_DIR / "config.json"
+COOKIES_FILE = STORAGE_DIR / "cookies.txt"
 
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 THUMB_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_cookie_file_path() -> Optional[str]:
+    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
+        return str(COOKIES_FILE)
+    alt = BASE_DIR / "cookies.txt"
+    if alt.exists() and alt.stat().st_size > 0:
+        return str(alt)
+    env_cookies = os.getenv("YOUTUBE_COOKIES", "").strip()
+    if env_cookies:
+        try:
+            with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+                f.write(env_cookies)
+            return str(COOKIES_FILE)
+        except Exception as e:
+            print("Failed to write YOUTUBE_COOKIES env var to file:", e)
+    return None
+
+def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "mweb", "web"]
+            }
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+    }
+    cookie_path = get_cookie_file_path()
+    if cookie_path:
+        opts["cookiefile"] = cookie_path
+
+    if extra_opts:
+        for k, v in extra_opts.items():
+            if k == "extractor_args" and isinstance(v, dict):
+                if "extractor_args" not in opts:
+                    opts["extractor_args"] = {}
+                for ek, ev in v.items():
+                    opts["extractor_args"][ek] = ev
+            elif k == "http_headers" and isinstance(v, dict):
+                opts["http_headers"].update(v)
+            else:
+                opts[k] = v
+    return opts
+
+def extract_youtube_video_id(url: str) -> Optional[str]:
+    match = re.search(r'(?:v=|\/vi\/|youtu\.be\/|\/shorts\/|\/embed\/)([0-9A-Za-z_-]{11})', url)
+    return match.group(1) if match else None
+
+def fetch_youtube_oembed(url: str) -> Optional[dict]:
+    try:
+        encoded_url = urllib.parse.quote(url, safe="")
+        oembed_url = f"https://www.youtube.com/oembed?url={encoded_url}&format=json"
+        resp = requests.get(oembed_url, timeout=6)
+        if resp.status_code == 200:
+            data = resp.json()
+            vid = extract_youtube_video_id(url)
+            thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else data.get("thumbnail_url")
+            return {
+                "title": data.get("title", "Unknown Title"),
+                "artist": data.get("author_name", "Unknown Artist"),
+                "duration": 0.0,
+                "thumbnail": thumb or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80",
+                "source_url": url,
+                "direct": False
+            }
+    except Exception as e:
+        print("YouTube oEmbed fetch failed:", e)
+    return None
 
 app = FastAPI(title="Cloud Music Player & Audio Downloader API", version="1.0.0")
 
@@ -66,6 +139,7 @@ class StorageConfig(BaseModel):
     supabase_url: Optional[str] = ""
     supabase_key: Optional[str] = ""
     supabase_bucket: Optional[str] = "music"
+    youtube_cookies: Optional[str] = ""
 
 def get_supabase_headers(cfg: dict) -> dict:
     key = cfg.get("supabase_key", "")
@@ -239,7 +313,8 @@ def load_config() -> dict:
         "provider": os.getenv("STORAGE_PROVIDER", "local"),
         "supabase_url": os.getenv("SUPABASE_URL", ""),
         "supabase_key": os.getenv("SUPABASE_KEY", ""),
-        "supabase_bucket": os.getenv("SUPABASE_BUCKET", "music")
+        "supabase_bucket": os.getenv("SUPABASE_BUCKET", "music"),
+        "youtube_cookies": ""
     }
     if CONFIG_FILE.exists():
         try:
@@ -250,14 +325,22 @@ def load_config() -> dict:
                         cfg[k] = v
         except Exception:
             pass
+    if COOKIES_FILE.exists():
+        try:
+            with open(COOKIES_FILE, "r", encoding="utf-8") as f:
+                cfg["youtube_cookies"] = f.read()
+        except Exception:
+            pass
     if cfg.get("supabase_url") and cfg.get("supabase_key"):
         if not cfg.get("provider") or cfg.get("provider") == "local":
             cfg["provider"] = "supabase"
     return cfg
 
 def save_config_file(cfg: dict):
+    # Don't persist full raw cookies in config.json; cookies are in cookies.txt
+    filtered = {k: v for k, v in cfg.items() if k != "youtube_cookies"}
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
+        json.dump(filtered, f, indent=2)
 
 def upload_to_supabase(file_path: Path, filename: str, content_type: str = "audio/mpeg") -> Optional[str]:
     cfg = load_config()
@@ -298,8 +381,22 @@ def get_config():
 @app.post("/api/config")
 def update_config(config: StorageConfig):
     cfg_data = config.model_dump()
+    cookies_content = cfg_data.get("youtube_cookies")
+    if cookies_content is not None:
+        cookies_str = cookies_content.strip()
+        if cookies_str:
+            try:
+                with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+                    f.write(cookies_str)
+            except Exception as e:
+                print("Failed to save cookies.txt:", e)
+        elif COOKIES_FILE.exists():
+            try:
+                COOKIES_FILE.unlink()
+            except Exception:
+                pass
     save_config_file(cfg_data)
-    return {"message": "Configuration updated successfully", "config": cfg_data}
+    return {"message": "Configuration updated successfully", "config": load_config()}
 
 @app.get("/api/tracks")
 def get_tracks():
@@ -360,21 +457,26 @@ def preview_url(req: PreviewRequest):
             "direct": True
         }
 
-    # yt-dlp metadata extraction
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
+    is_youtube = ("youtube.com" in url.lower() or "youtu.be" in url.lower())
+
+    # For YouTube, pre-fetch oEmbed metadata (never blocked by YouTube bot checks on datacenter IPs)
+    oembed_meta = None
+    if is_youtube:
+        oembed_meta = fetch_youtube_oembed(url)
+
+    # Attempt yt-dlp metadata extraction using mobile player client
+    ydl_opts = get_ydl_opts({
         "skip_download": True,
-        "extract_flat": False,
-    }
+        "extract_flat": "in_playlist",
+    })
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            title = info.get("title", "Unknown Title")
-            artist = info.get("artist") or info.get("uploader") or info.get("channel") or "Unknown Artist"
-            duration = info.get("duration", 0)
-            thumbnail = info.get("thumbnail") or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80"
+            title = info.get("title") or (oembed_meta["title"] if oembed_meta else "Unknown Title")
+            artist = info.get("artist") or info.get("uploader") or info.get("channel") or (oembed_meta["artist"] if oembed_meta else "Unknown Artist")
+            duration = float(info.get("duration", 0) or (oembed_meta["duration"] if oembed_meta else 0))
+            thumbnail = info.get("thumbnail") or (oembed_meta["thumbnail"] if oembed_meta else "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80")
             return {
                 "title": title,
                 "artist": artist,
@@ -384,6 +486,9 @@ def preview_url(req: PreviewRequest):
                 "direct": False
             }
     except Exception as e:
+        # If yt-dlp hit bot check / error, but oEmbed succeeded, return oEmbed metadata
+        if oembed_meta:
+            return oembed_meta
         raise HTTPException(status_code=400, detail=f"Failed to inspect URL: {str(e)}")
 
 @app.post("/api/extract")
@@ -425,13 +530,11 @@ def extract_and_download(req: ExtractRequest):
             raise HTTPException(status_code=400, detail=f"Failed to download direct audio: {str(e)}")
 
     else:
-        # yt-dlp audio download
-        ydl_opts = {
+        # yt-dlp audio download with mobile player client
+        ydl_opts = get_ydl_opts({
             "format": "bestaudio/best",
             "outtmpl": str(AUDIO_DIR / f"{track_id}.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
-        }
+        })
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -451,7 +554,10 @@ def extract_and_download(req: ExtractRequest):
                 else:
                     raise Exception("Audio file could not be generated by extractor")
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to extract audio with yt-dlp: {str(e)}")
+            err_msg = str(e)
+            if "bot" in err_msg.lower() or "cookies" in err_msg.lower():
+                err_msg = "YouTube bot verification triggered. Add YouTube cookies in Cloud Storage Settings or provide a direct audio URL."
+            raise HTTPException(status_code=400, detail=f"Failed to extract audio with yt-dlp: {err_msg}")
 
     # Storage decision: Try Supabase if configured, otherwise fallback to local server stream
     cfg = load_config()
@@ -508,12 +614,10 @@ def stream_audio(url: str = Query(...)):
         if now < expire_at:
             return RedirectResponse(cached_url, status_code=302)
 
-    ydl_opts = {
+    ydl_opts = get_ydl_opts({
         "format": "bestaudio/best",
-        "quiet": True,
-        "no_warnings": True,
         "skip_download": True,
-    }
+    })
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -555,12 +659,13 @@ def bookmark_stream(req: ExtractRequest):
         duration = 180.0
         thumbnail = "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80"
     else:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
+        is_youtube = ("youtube.com" in url.lower() or "youtu.be" in url.lower())
+        oembed_meta = fetch_youtube_oembed(url) if is_youtube else None
+
+        ydl_opts = get_ydl_opts({
             "skip_download": True,
-            "extract_flat": False,
-        }
+            "extract_flat": "in_playlist",
+        })
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -569,7 +674,12 @@ def bookmark_stream(req: ExtractRequest):
                 duration = float(info.get("duration", 0) or 0)
                 thumbnail = info.get("thumbnail") or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80"
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to inspect YouTube URL: {str(e)}")
+            if oembed_meta:
+                title = title or oembed_meta["title"]
+                artist = artist or oembed_meta["artist"]
+                thumbnail = thumbnail or oembed_meta["thumbnail"]
+            else:
+                raise HTTPException(status_code=400, detail=f"Failed to inspect YouTube URL: {str(e)}")
 
     encoded_url = urllib.parse.quote(url)
     stream_endpoint = f"/api/stream?url={encoded_url}"

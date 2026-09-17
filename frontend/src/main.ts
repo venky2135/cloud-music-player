@@ -18,6 +18,7 @@ interface CloudConfig {
   supabase_url: string;
   supabase_key: string;
   supabase_bucket: string;
+  youtube_cookies?: string;
 }
 
 const API_BASE = window.location.port === '5173' ? 'http://127.0.0.1:8000' : '';
@@ -40,6 +41,7 @@ class MusicPlayerApp {
     supabase_url: '',
     supabase_key: '',
     supabase_bucket: 'music',
+    youtube_cookies: '',
   };
 
   // Audio engine
@@ -374,6 +376,13 @@ class MusicPlayerApp {
                 <label class="form-label" for="supa-bucket">Bucket Name</label>
                 <input type="text" id="supa-bucket" class="form-input" value="music" placeholder="music" />
               </div>
+            </div>
+
+            <!-- YouTube Cookies section -->
+            <div class="form-group" style="margin-top:14px;">
+              <label class="form-label" for="yt-cookies">YouTube Cookies (Optional)</label>
+              <textarea id="yt-cookies" class="form-input" rows="3" style="font-family:monospace;font-size:11px;resize:vertical;" placeholder="# Netscape HTTP Cookie File&#10;# Paste cookies if YouTube asks for bot verification on datacenter IPs"></textarea>
+              <span style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px;">Used automatically when downloading age-restricted or server-protected tracks.</span>
             </div>
           </div>
 
@@ -1105,6 +1114,7 @@ class MusicPlayerApp {
     this.$<HTMLInputElement>('supa-url').value = this.cloudConfig.supabase_url || '';
     this.$<HTMLInputElement>('supa-key').value = this.cloudConfig.supabase_key || '';
     this.$<HTMLInputElement>('supa-bucket').value = this.cloudConfig.supabase_bucket || 'music';
+    this.$<HTMLTextAreaElement>('yt-cookies').value = this.cloudConfig.youtube_cookies || '';
     this.$('supa-fields').style.display =
       this.cloudConfig.provider === 'supabase' ? 'flex' : 'none';
   }
@@ -1114,8 +1124,9 @@ class MusicPlayerApp {
     const supabase_url = this.$<HTMLInputElement>('supa-url').value.trim();
     const supabase_key = this.$<HTMLInputElement>('supa-key').value.trim();
     const supabase_bucket = this.$<HTMLInputElement>('supa-bucket').value.trim();
+    const youtube_cookies = this.$<HTMLTextAreaElement>('yt-cookies').value;
 
-    const cfg: CloudConfig = { provider, supabase_url, supabase_key, supabase_bucket };
+    const cfg: CloudConfig = { provider, supabase_url, supabase_key, supabase_bucket, youtube_cookies };
 
     try {
       const res = await fetch(`${API_BASE}/api/config`, {
