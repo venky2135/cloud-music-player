@@ -1,9 +1,10 @@
 # Dockerfile for Free Cloud Deployment (Hugging Face Spaces, Render, Fly.io, or Koyeb)
 FROM python:3.11-slim
 
-# Install system dependencies including ffmpeg for audio transcoding
+# Install system dependencies including ffmpeg and nodejs for audio transcoding & yt-dlp challenge solving
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    nodejs \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/*

@@ -50,11 +50,8 @@ def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
     opts = {
         "quiet": True,
         "no_warnings": True,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios", "mweb", "web"]
-            }
-        },
+        "js_runtimes": {"node": {}},
+        "remote_components": {"ejs:github": {}},
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
@@ -63,6 +60,13 @@ def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
     cookie_path = get_cookie_file_path()
     if cookie_path:
         opts["cookiefile"] = cookie_path
+    else:
+        # Fallback to mobile player clients when no cookies are supplied
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["android", "ios", "mweb", "web"]
+            }
+        }
 
     if extra_opts:
         for k, v in extra_opts.items():

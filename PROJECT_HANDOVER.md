@@ -236,6 +236,7 @@ This project was built from scratch in a single conversation with the following 
 10. **Unified Single-Service Render Deployment** — Frontend packaged directly into FastAPI backend using a multi-stage `Dockerfile` and `render.yaml`. FastAPI serves the Vite `dist/` bundle on `/` while serving API endpoints on `/api/*`. One URL, one Render deployment.
 11. **Option B Supabase Cloud Sync Configured** — Integrated Supabase storage bucket `music` and metadata backup/database synchronization. Credentials configured in `backend/.env` and `config.json`. Audio uploads stream directly over Supabase global CDN public URLs and local temporary audio is auto-cleaned. Created `supabase_schema.sql` for PostgreSQL table setup.
 12. **YouTube Bot Challenge Fix on Cloud Servers** — Resolved datacenter IP blocks on Render by: (1) Adding YouTube oEmbed API for instant, resilient preview/metadata inspection without bot challenges; (2) Configuring yt-dlp with mobile player clients (`android`, `ios`, `mweb`, `web`); (3) Adding optional YouTube Cookies (Netscape format) support via UI settings modal and `YOUTUBE_COOKIES` environment variable.
+13. **YouTube Cookies & JS Challenge Engine Configured** — Stored Netscape cookies into `backend/storage/cookies.txt`, added `cookies.txt` to `.gitignore`, updated `Dockerfile` to include `nodejs`, and configured `yt-dlp` with `js_runtimes: {"node": {}}` and `remote_components: {"ejs:github": {}}`. Verified full audio extraction and download from YouTube.
 
 ---
 

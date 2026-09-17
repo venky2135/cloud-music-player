@@ -20,4 +20,6 @@ backend/storage/config.json
 .env
 backend/.env
 *.log
+*cookies.txt
+backend/storage/cookies.txt
 .agents/
