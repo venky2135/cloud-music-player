@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: soundvault
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: SUPABASE_URL
+        value: https://kgtlhjwsheiholowfebj.supabase.co
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: music
+      - key: STORAGE_PROVIDER
+        value: supabase

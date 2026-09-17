@@ -1,28 +1,25 @@
 # 🎵 SoundVault — Cloud Music Player & URL Audio Downloader
 
-SoundVault is a high-fidelity web music player and audio downloader with cloud drive synchronization and a sleek Spotify/Apple Music-grade dark glassmorphic design.
+SoundVault is a high-fidelity web music player and audio downloader with cloud drive synchronization and a minimal, responsive dark UI with lime accents.
 
 ---
 
 ## ✨ Features
 
-- **⚡ Instant URL Audio Extractor & Downloader**: Paste any YouTube, SoundCloud, or direct audio link (`.mp3`, `.wav`, `.m4a`, etc.). The backend inspects, downloads, transcodes, and saves the track directly to your drive.
-- **🚀 Zero-Storage Ad-Free Live Stream**: Stream YouTube or web audio live with zero advertisements without saving any audio files to disk or storage (0 MB used).
-- **❤️ Favorites & Replay Without Re-pasting**: Songs added via Live Stream are automatically saved to your Favorites with metadata and artwork so you can replay them anytime with a single click.
+- **⚡ Instant URL Audio Extractor & Downloader**: Paste any YouTube, SoundCloud, or direct audio link (`.mp3`, `.wav`, `.m4a`, etc.). The backend inspects, downloads, transcodes via FFmpeg, and saves the track directly to your drive.
 - **☁ Cloud Drive Storage**:
   - **Local Drive Mode** (zero configuration, instant streaming)
-  - **Supabase Cloud Storage** (1 GB free storage, fast global CDN, direct streaming URLs)
-  - **Google Drive API Support** (15 GB free tier)
+  - **Supabase Cloud Storage** (1 GB free storage, fast global CDN, persistent audio files)
 - **🎧 Core Music Player**:
   - Play, Pause, Previous, Next, Scrub Seek Bar, Duration Counter.
   - Shuffle and Repeat modes (Repeat All / Repeat One).
   - Volume slider with one-click Mute/Unmute.
-  - Interactive Favorites system.
+  - Interactive Favorites / Liked songs system.
   - Real-time search filter across library.
-- **🎨 Visual Aesthetics**:
-  - Real-time Audio Frequency Visualizer powered by HTML5 Web Audio API.
-  - Rotating vinyl album artwork effect during playback.
-  - Dynamic hero banner reflecting the active track.
+- **📱 Responsive Minimal Design**:
+  - Clean two-panel desktop layout (Library left, Now Playing right).
+  - Native-app feel on mobile with bottom mini-player bar and slide-up full Now Playing screen.
+  - Rotating vinyl artwork effect during playback.
 - **⌨ Keyboard Shortcuts**:
   - `Space`: Play / Pause
   - `ArrowRight` / `ArrowLeft`: Seek ±5 seconds
@@ -33,65 +30,68 @@ SoundVault is a high-fidelity web music player and audio downloader with cloud d
 
 ---
 
-## 🚀 Free Hosting & Deployment Guide
+## 🚀 Unified Single Deployment to Render (Frontend + Backend in One)
 
-### 1. Backend Deployment (Free Docker Hosting)
-The backend uses Python FastAPI, `yt-dlp`, and `ffmpeg`.
+The frontend and backend can now be deployed together as **one single web service** on Render with **one URL**!
 
-#### Target A: Hugging Face Spaces (Recommended - 100% Free, Does Not Sleep)
-1. Go to [Hugging Face Spaces](https://huggingface.co/spaces) and click **Create new Space**.
-2. Select **Docker** as SDK. Choose **Blank** template.
-3. Upload the files in `backend/` (`Dockerfile`, `main.py`, `requirements.txt`).
-4. Hugging Face builds and provides an HTTPS URL (e.g., `https://username-space-name.hf.space`).
+### How it works:
+- The multi-stage `Dockerfile` in the root builds the Vite frontend bundle (`dist/`) in Stage 1.
+- In Stage 2, it sets up Python 3.11 with `ffmpeg`, installs backend dependencies, and copies both the FastAPI backend and built frontend files into `/app`.
+- FastAPI serves API endpoints on `/api/*`, stored audio on `/storage/*`, and the frontend static files on root `/`.
+- API calls automatically use relative paths in production (no CORS issues, no separate hosting needed).
 
-#### Target B: Render (Free Web Service)
-1. Push the code to a GitHub repository.
-2. Go to [Render](https://render.com) and create a **New Web Service** pointing to `backend/`.
-3. Select **Docker** environment and free tier.
+### Deploying to Render (Free Tier):
+1. **Push your code to GitHub** (commit all files including `Dockerfile` and `render.yaml`).
+2. Go to **[Render Dashboard](https://dashboard.render.com/)** and click **New +** → **Web Service** (or **Blueprint**).
+3. Connect your GitHub repository.
+4. If using **Web Service**:
+   - **Environment**: `Docker`
+   - **Dockerfile Path**: `./Dockerfile`
+   - **Docker Build Context**: `.` (Root)
+   - **Plan**: `Free`
+5. Click **Create Web Service**.
+6. Render will automatically build the Vite frontend, install FFmpeg + Python packages, and launch SoundVault on your dedicated Render URL (e.g. `https://soundvault-xxxx.onrender.com`).
 
----
-
-### 2. Frontend Deployment (Free Static Hosting on Vercel or Netlify)
-1. Go to [Vercel](https://vercel.com) or [Netlify](https://netlify.com).
-2. Import the `frontend/` folder from your GitHub repo.
-3. Build command: `npm run build`
-4. Output directory: `dist`
-5. (Optional) In `frontend/src/main.ts`, change `API_BASE` to your deployed backend URL.
-
----
-
-### 3. Cloud Drive Storage Setup (Supabase Free Tier)
-1. Sign up at [Supabase](https://supabase.com) (free 1 GB storage + Postgres).
-2. Create a new project.
-3. Go to **Storage** -> Click **New Bucket** -> Name it `music` and set it to **Public**.
-4. Copy your **Project URL** and **API Key (anon or service_role)** from Project Settings -> API.
-5. In the SoundVault UI, click the **Settings ⚙** icon on the bottom-left sidebar, switch provider to **Supabase Cloud Storage**, paste your URL and Key, and click **Save**. All future downloaded tracks will be uploaded directly to your cloud drive!
+> **Tip for Persistent Storage**: Render free-tier web services have an ephemeral filesystem (local downloaded files reset if the container restarts). To make your library persistent across restarts, connect **Supabase Storage** (free 1 GB) in the app's **Settings ⚙** modal.
 
 ---
 
 ## 💻 Local Development
 
-### Prerequisites
-- Node.js (v18+)
-- Python (v3.10+)
+### Option A: Running separately for rapid frontend development (Hot Reload)
 
-### Backend:
+**Backend:**
 ```bash
 cd backend
 python -m venv venv
-# On Windows:
+# Windows:
 .\venv\Scripts\activate
-# On Linux/macOS:
+# Linux/macOS:
 source venv/bin/activate
 
 pip install -r requirements.txt
 uvicorn main:app --port 8000 --reload
 ```
 
-### Frontend:
+**Frontend:**
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-Open `http://localhost:5173` in your browser.
+Open `http://localhost:5173`. In dev mode, the frontend automatically talks to `http://127.0.0.1:8000`.
+
+---
+
+### Option B: Running the unified single server locally
+
+Build the frontend once and let FastAPI serve everything:
+```bash
+cd frontend
+npm run build
+
+cd ../backend
+.\venv\Scripts\activate
+uvicorn main:app --port 8000
+```
+Open `http://localhost:8000` to see both frontend and backend served together.

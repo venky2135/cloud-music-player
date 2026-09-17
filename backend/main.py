@@ -7,8 +7,12 @@ import time
 import requests
 from pathlib import Path
 from typing import Optional, List
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -63,7 +67,108 @@ class StorageConfig(BaseModel):
     supabase_key: Optional[str] = ""
     supabase_bucket: Optional[str] = "music"
 
-def load_tracks() -> List[dict]:
+def get_supabase_headers(cfg: dict) -> dict:
+    key = cfg.get("supabase_key", "")
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json"
+    }
+
+def fetch_supabase_tracks(cfg: dict) -> Optional[List[dict]]:
+    supa_url = (cfg.get("supabase_url") or "").rstrip("/")
+    if not supa_url or not cfg.get("supabase_key"):
+        return None
+    headers = get_supabase_headers(cfg)
+
+    # 1. Try PostgreSQL table via PostgREST
+    try:
+        r = requests.get(f"{supa_url}/rest/v1/tracks?select=*&order=created_at.desc", headers=headers, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print("Supabase DB query error:", e)
+
+    # 2. Fallback to storage bucket metadata/tracks.json
+    try:
+        bucket = cfg.get("supabase_bucket", "music")
+        cache_buster = int(time.time())
+        r = requests.get(
+            f"{supa_url}/storage/v1/object/public/{bucket}/metadata/tracks.json?t={cache_buster}",
+            headers={"Cache-Control": "no-cache"},
+            timeout=5
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and len(data) > 0:
+                return data
+    except Exception as e:
+        print("Supabase storage metadata fetch error:", e)
+
+    return None
+
+def save_supabase_track_item(track: dict, cfg: dict):
+    supa_url = (cfg.get("supabase_url") or "").rstrip("/")
+    if not supa_url or not cfg.get("supabase_key"):
+        return
+    headers = get_supabase_headers(cfg)
+    try:
+        # Upsert into PostgreSQL table
+        requests.post(
+            f"{supa_url}/rest/v1/tracks",
+            headers={**headers, "Prefer": "resolution=merge-duplicates"},
+            json=track,
+            timeout=5
+        )
+    except Exception as e:
+        print("Supabase DB track upsert error:", e)
+
+def save_supabase_tracks_backup(tracks: List[dict], cfg: dict):
+    supa_url = (cfg.get("supabase_url") or "").rstrip("/")
+    if not supa_url or not cfg.get("supabase_key"):
+        return
+    headers = get_supabase_headers(cfg)
+    bucket = cfg.get("supabase_bucket", "music")
+    try:
+        data = json.dumps(tracks).encode("utf-8")
+        r = requests.post(
+            f"{supa_url}/storage/v1/object/{bucket}/metadata/tracks.json",
+            headers={**headers, "x-upsert": "true"},
+            data=data,
+            timeout=8
+        )
+        if r.status_code not in (200, 201):
+            requests.put(
+                f"{supa_url}/storage/v1/object/{bucket}/metadata/tracks.json",
+                headers=headers,
+                data=data,
+                timeout=8
+            )
+    except Exception as e:
+        print("Supabase storage metadata backup error:", e)
+
+def delete_supabase_track(track_id: str, audio_url: str, cfg: dict):
+    supa_url = (cfg.get("supabase_url") or "").rstrip("/")
+    if not supa_url or not cfg.get("supabase_key"):
+        return
+    headers = get_supabase_headers(cfg)
+    bucket = cfg.get("supabase_bucket", "music")
+
+    # 1. Delete from PostgreSQL table
+    try:
+        requests.delete(f"{supa_url}/rest/v1/tracks?id=eq.{track_id}", headers=headers, timeout=5)
+    except Exception as e:
+        print("Supabase DB track delete error:", e)
+
+    # 2. Delete audio file from storage bucket if hosted in Supabase
+    try:
+        if f"/storage/v1/object/public/{bucket}/" in audio_url:
+            filename = audio_url.split(f"/storage/v1/object/public/{bucket}/")[-1]
+            requests.delete(f"{supa_url}/storage/v1/object/{bucket}", headers=headers, json={"prefixes": [filename]}, timeout=5)
+    except Exception as e:
+        print("Supabase storage audio delete error:", e)
+
+def load_local_tracks() -> List[dict]:
     if not METADATA_FILE.exists():
         initial_tracks = [
             {
@@ -100,7 +205,7 @@ def load_tracks() -> List[dict]:
                 "created_at": time.time() - 900
             }
         ]
-        save_tracks(initial_tracks)
+        save_local_tracks(initial_tracks)
         return initial_tracks
 
     try:
@@ -109,23 +214,46 @@ def load_tracks() -> List[dict]:
     except Exception:
         return []
 
-def save_tracks(tracks: List[dict]):
+def save_local_tracks(tracks: List[dict]):
     with open(METADATA_FILE, "w", encoding="utf-8") as f:
         json.dump(tracks, f, indent=2)
 
+def load_tracks() -> List[dict]:
+    cfg = load_config()
+    if cfg.get("provider") == "supabase" and cfg.get("supabase_url") and cfg.get("supabase_key"):
+        cloud_tracks = fetch_supabase_tracks(cfg)
+        if cloud_tracks is not None and len(cloud_tracks) > 0:
+            save_local_tracks(cloud_tracks)
+            return cloud_tracks
+
+    return load_local_tracks()
+
+def save_tracks(tracks: List[dict]):
+    save_local_tracks(tracks)
+    cfg = load_config()
+    if cfg.get("provider") == "supabase" and cfg.get("supabase_url") and cfg.get("supabase_key"):
+        save_supabase_tracks_backup(tracks, cfg)
+
 def load_config() -> dict:
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {
-        "provider": "local",
+    cfg = {
+        "provider": os.getenv("STORAGE_PROVIDER", "local"),
         "supabase_url": os.getenv("SUPABASE_URL", ""),
         "supabase_key": os.getenv("SUPABASE_KEY", ""),
         "supabase_bucket": os.getenv("SUPABASE_BUCKET", "music")
     }
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                for k, v in saved.items():
+                    if v:
+                        cfg[k] = v
+        except Exception:
+            pass
+    if cfg.get("supabase_url") and cfg.get("supabase_key"):
+        if not cfg.get("provider") or cfg.get("provider") == "local":
+            cfg["provider"] = "supabase"
+    return cfg
 
 def save_config_file(cfg: dict):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -133,7 +261,7 @@ def save_config_file(cfg: dict):
 
 def upload_to_supabase(file_path: Path, filename: str, content_type: str = "audio/mpeg") -> Optional[str]:
     cfg = load_config()
-    supa_url = cfg.get("supabase_url")
+    supa_url = (cfg.get("supabase_url") or "").rstrip("/")
     supa_key = cfg.get("supabase_key")
     bucket = cfg.get("supabase_bucket", "music")
 
@@ -141,17 +269,17 @@ def upload_to_supabase(file_path: Path, filename: str, content_type: str = "audi
         return None
 
     try:
-        clean_supa_url = supa_url.rstrip("/")
-        endpoint = f"{clean_supa_url}/storage/v1/object/{bucket}/{filename}"
+        endpoint = f"{supa_url}/storage/v1/object/{bucket}/{filename}"
         headers = {
             "Authorization": f"Bearer {supa_key}",
             "apikey": supa_key,
+            "x-upsert": "true",
             "Content-Type": content_type
         }
         with open(file_path, "rb") as f:
-            resp = requests.post(endpoint, headers=headers, data=f)
+            resp = requests.post(endpoint, headers=headers, data=f, timeout=60)
             if resp.status_code in (200, 201):
-                return f"{clean_supa_url}/storage/v1/object/public/{bucket}/{filename}"
+                return f"{supa_url}/storage/v1/object/public/{bucket}/{filename}"
             else:
                 print("Supabase upload failed:", resp.status_code, resp.text)
                 return None
@@ -195,8 +323,12 @@ def delete_track(track_id: str):
         
     save_tracks(remaining_tracks)
     
-    # Try removing local file if it exists
     audio_url = track_to_delete.get("audio_url", "")
+    cfg = load_config()
+    if cfg.get("provider") == "supabase" and cfg.get("supabase_url") and cfg.get("supabase_key"):
+        delete_supabase_track(track_id, audio_url, cfg)
+
+    # Try removing local file if it exists
     if "/storage/audio/" in audio_url:
         filename = audio_url.split("/storage/audio/")[-1]
         local_path = AUDIO_DIR / filename
@@ -329,6 +461,10 @@ def extract_and_download(req: ExtractRequest):
         supa_url = upload_to_supabase(local_output_path, output_filename)
         if supa_url:
             final_audio_url = supa_url
+            try:
+                local_output_path.unlink()
+            except Exception as e:
+                print(f"Could not remove local temp audio: {e}")
 
     new_track = {
         "id": track_id,
@@ -345,6 +481,8 @@ def extract_and_download(req: ExtractRequest):
     current_tracks = load_tracks()
     current_tracks.insert(0, new_track)
     save_tracks(current_tracks)
+    if cfg.get("provider") == "supabase":
+        save_supabase_track_item(new_track, cfg)
 
     return {"message": "Track downloaded and saved successfully", "track": new_track}
 
@@ -454,4 +592,15 @@ def bookmark_stream(req: ExtractRequest):
     save_tracks(current_tracks)
 
     return {"message": "Stream bookmarked successfully", "track": new_track}
+
+
+# ── Frontend Static Files (Single-deployment / Combined build) ──
+FRONTEND_DIST = BASE_DIR / "dist"
+if not FRONTEND_DIST.exists():
+    # Fallback to sibling frontend/dist when testing in development repo
+    FRONTEND_DIST = BASE_DIR.parent / "frontend" / "dist"
+
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+
 

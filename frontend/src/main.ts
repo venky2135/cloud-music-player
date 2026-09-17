@@ -20,7 +20,7 @@ interface CloudConfig {
   supabase_bucket: string;
 }
 
-const API_BASE = 'http://127.0.0.1:8000';
+const API_BASE = window.location.port === '5173' ? 'http://127.0.0.1:8000' : '';
 
 class MusicPlayerApp {
   private tracks: Track[] = [];
@@ -31,475 +31,493 @@ class MusicPlayerApp {
   private volume = 0.8;
   private isMuted = false;
   private searchQuery = '';
-  private activeTab: 'library' | 'favorites' = 'library';
-  private favorites = new Set<string>(JSON.parse(localStorage.getItem('soundvault_favs') || '[]'));
-  private cloudConfig: CloudConfig = { provider: 'local', supabase_url: '', supabase_key: '', supabase_bucket: 'music' };
+  private activeFilter: 'all' | 'liked' = 'all';
+  private favorites = new Set<string>(
+    JSON.parse(localStorage.getItem('soundvault_favs') || '[]')
+  );
+  private cloudConfig: CloudConfig = {
+    provider: 'local',
+    supabase_url: '',
+    supabase_key: '',
+    supabase_bucket: 'music',
+  };
 
-  // Audio Engine
+  // Audio engine
   private audio: HTMLAudioElement;
   private audioCtx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
-  private dataArray: Uint8Array | null = null;
-  private visualizerAnimationId: number | null = null;
 
   constructor() {
     this.audio = new Audio();
     this.audio.crossOrigin = 'anonymous';
     this.audio.volume = this.volume;
 
-    this.renderAppShell();
-    this.attachEventListeners();
+    this.renderShell();
+    this.attachListeners();
     this.initAudioEvents();
-    this.initKeyboardShortcuts();
+    this.initKeyboard();
     this.fetchConfig();
     this.fetchTracks();
   }
 
+  // ──────────────────────────────────────────
+  // HELPERS
+  // ──────────────────────────────────────────
+
   private resolveAudioUrl(url: string): string {
-    if (url.startsWith('/storage')) {
-      return `${API_BASE}${url}`;
-    }
-    return url;
+    return url.startsWith('/storage') ? `${API_BASE}${url}` : url;
   }
 
-  private formatTime(seconds: number): string {
-    if (isNaN(seconds) || seconds < 0) return '0:00';
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
+  private fmt(sec: number): string {
+    if (isNaN(sec) || sec < 0) return '0:00';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   }
 
-  private showToast(message: string, type: 'success' | 'error' = 'success') {
-    const container = document.getElementById('toast-container');
-    if (!container) return;
-    const toast = document.createElement('div');
-    toast.className = `toast ${type}`;
-    toast.innerHTML = `
-      <span>${type === 'success' ? '✓' : '⚠'}</span>
-      <span>${message}</span>
-    `;
-    container.appendChild(toast);
+  private toast(msg: string, type: 'success' | 'error' = 'success') {
+    const zone = document.getElementById('toast-zone')!;
+    const t = document.createElement('div');
+    t.className = `toast${type === 'error' ? ' error' : ''}`;
+    t.textContent = msg;
+    zone.appendChild(t);
     setTimeout(() => {
-      toast.style.opacity = '0';
-      toast.style.transform = 'translateY(10px)';
-      toast.style.transition = 'all 0.3s ease';
-      setTimeout(() => toast.remove(), 300);
-    }, 3500);
+      t.style.transition = 'opacity 0.3s, transform 0.3s';
+      t.style.opacity = '0';
+      t.style.transform = 'translateY(8px) scale(0.94)';
+      setTimeout(() => t.remove(), 300);
+    }, 3000);
   }
 
-  private renderAppShell() {
-    const app = document.getElementById('app')!;
-    app.innerHTML = `
-      <div class="app-container">
-        <!-- Sidebar -->
-        <aside class="sidebar">
-          <div class="brand">
-            <div class="brand-icon">🎵</div>
-            <div class="brand-title">SoundVault</div>
-          </div>
+  private $ = <T extends HTMLElement>(id: string) =>
+    document.getElementById(id) as T;
 
-          <button id="btn-open-downloader" class="btn-download-action">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            <span>Download from URL</span>
-          </button>
+  // ──────────────────────────────────────────
+  // SHELL RENDER
+  // ──────────────────────────────────────────
 
-          <div class="nav-group">
-            <span class="nav-label">Menu</span>
-            <div id="nav-library" class="nav-item active">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-              <span>Library</span>
-            </div>
-            <div id="nav-favorites" class="nav-item">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
-              <span>Favorites</span>
-            </div>
-          </div>
+  private renderShell() {
+    document.getElementById('app')!.innerHTML = `
+      <div class="app-layout">
 
-          <div class="cloud-status-card">
-            <div class="status-indicator">
-              <div id="cloud-status-dot" class="dot"></div>
-              <div>
-                <strong id="cloud-provider-name">Local Storage</strong>
-                <div style="color: var(--text-muted); font-size: 11px;">Drive Active</div>
-              </div>
-            </div>
-            <button id="btn-open-settings" class="track-action-btn" title="Cloud Drive Settings">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <!-- ═══ LIBRARY PANEL ═══ -->
+        <div class="library-panel">
+
+          <!-- Header -->
+          <div class="lib-header">
+            <button class="icon-btn" id="btn-open-settings" title="Storage settings" aria-label="Settings">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </button>
+            <h1 class="lib-header-title">My Music</h1>
+            <button class="icon-btn accent" id="btn-open-dl" title="Add song from URL" aria-label="Add song">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
             </button>
           </div>
-        </aside>
 
-        <!-- Main View -->
-        <main class="main-view">
-          <!-- Top Header -->
-          <div class="top-header">
-            <div class="search-bar">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              <input type="text" id="search-input" placeholder="Search title, artist or genre..." />
+          <!-- Search -->
+          <div class="search-wrap">
+            <div class="search-inner">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input type="text" id="search-input" placeholder="Search songs, artists…" autocomplete="off" />
             </div>
+          </div>
 
-            <div class="header-actions">
-              <button id="btn-quick-url" class="btn-icon-action" title="Add song from link">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <!-- Filter Pills -->
+          <div class="filter-row">
+            <button class="pill active" id="pill-all">All</button>
+            <button class="pill" id="pill-liked">Liked Songs</button>
+          </div>
+
+          <!-- Track List -->
+          <div class="track-list" id="track-list">
+            <!-- injected by renderTrackList() -->
+          </div>
+
+          <!-- Mini Player (mobile only) -->
+          <div class="mini-player hidden" id="mini-player">
+            <img class="mini-art" id="mini-art"
+              src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>" alt="Art" />
+            <div class="mini-info">
+              <div class="mini-title" id="mini-title">—</div>
+              <div class="mini-artist" id="mini-artist">—</div>
+            </div>
+            <div class="mini-controls">
+              <button class="mini-btn" id="mini-prev" title="Previous" aria-label="Previous">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>
+                </svg>
+              </button>
+              <button class="mini-play-btn" id="mini-play" title="Play / Pause" aria-label="Play/Pause">
+                <svg id="mini-play-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+              </button>
+              <button class="mini-btn" id="mini-next" title="Next" aria-label="Next">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>
+                </svg>
               </button>
             </div>
           </div>
+        </div>
 
-          <!-- Hero Banner -->
-          <div class="hero-banner">
-            <div class="hero-content">
-              <div class="hero-tag">⚡ Cloud Stream & Offline Ready</div>
-              <h1 class="hero-title" id="hero-title">Experience Pure Sound Freedom</h1>
-              <p class="hero-subtitle" id="hero-subtitle">Stream effortlessly, download music directly from any URL, and manage your library seamlessly.</p>
-              <div class="hero-btn-row">
-                <button id="btn-hero-play" class="btn-hero-play">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                  <span>Play Featured</span>
-                </button>
+        <!-- ═══ NOW PLAYING PANEL ═══ -->
+        <div class="now-playing-panel" id="now-playing-panel">
+          <div class="np-header">
+            <button class="np-back-btn" id="np-back" title="Back to library" aria-label="Back">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="15 18 9 12 15 6"/>
+              </svg>
+            </button>
+            <span class="np-header-title">Now Playing</span>
+            <button class="np-fav-btn" id="np-fav" title="Like / Unlike" aria-label="Like">
+              <svg id="np-fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Idle -->
+          <div class="np-idle" id="np-idle">
+            <span class="np-idle-icon">🎵</span>
+            <h3>Nothing playing</h3>
+            <p>Select a track from your library to start listening</p>
+          </div>
+
+          <!-- Active -->
+          <div class="np-active" id="np-active">
+            <div class="artwork-section">
+              <div class="artwork-glow" id="artwork-glow"></div>
+              <img class="artwork-img" id="artwork-img"
+                src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>" alt="Album art" />
+            </div>
+
+            <div class="np-info">
+              <div class="np-title" id="np-title">—</div>
+              <div class="np-artist" id="np-artist">—</div>
+            </div>
+
+            <div class="np-progress">
+              <div class="seek-bar" id="seek-bar">
+                <div class="seek-fill" id="seek-fill" style="width:0%"></div>
+              </div>
+              <div class="time-row">
+                <span id="current-time">0:00</span>
+                <span id="total-time">0:00</span>
               </div>
             </div>
-          </div>
 
-          <!-- Music Library -->
-          <div class="section-header">
-            <h2 class="section-title">
-              <span id="library-heading">All Songs</span>
-              <span id="track-count" class="badge-count">0 tracks</span>
-            </h2>
-          </div>
-
-          <div class="track-table-container">
-            <table class="track-table">
-              <thead>
-                <tr>
-                  <th style="width: 45px;">#</th>
-                  <th>Title & Artist</th>
-                  <th>Duration</th>
-                  <th>Storage</th>
-                  <th style="width: 100px; text-align: right;">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="track-table-body">
-                <!-- Injected via renderTrackList -->
-              </tbody>
-            </table>
-          </div>
-        </main>
-      </div>
-
-      <!-- Persistent Player Bar -->
-      <div class="player-bar">
-        <!-- Left: Now Playing Info -->
-        <div class="player-left">
-          <div class="player-thumb-wrap">
-            <img id="player-thumb" class="player-thumb" src="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=200&auto=format&fit=crop&q=80" alt="Cover" />
-          </div>
-          <div class="player-meta">
-            <div id="player-title" class="player-title">Select a track</div>
-            <div id="player-artist" class="player-artist">Ready to play</div>
-          </div>
-          <button id="player-fav-btn" class="track-action-btn" title="Save to favorites">
-            <svg id="fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
-          </button>
-        </div>
-
-        <!-- Center: Controls & Seek -->
-        <div class="player-center">
-          <div class="controls-row">
-            <button id="ctrl-shuffle" class="ctrl-btn" title="Shuffle">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
-            </button>
-            <button id="ctrl-prev" class="ctrl-btn" title="Previous (P)">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
-            </button>
-            <button id="ctrl-play" class="play-pause-btn" title="Play/Pause (Space)">
-              <svg id="play-pause-icon" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            </button>
-            <button id="ctrl-next" class="ctrl-btn" title="Next (N)">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-            </button>
-            <button id="ctrl-repeat" class="ctrl-btn active" title="Repeat All">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-            </button>
-          </div>
-
-          <div class="progress-row">
-            <span id="current-time" class="time-label">0:00</span>
-            <div id="seek-bar" class="seek-bar-container">
-              <div class="seek-bar-track">
-                <div id="seek-fill" class="seek-bar-fill"></div>
-              </div>
+            <div class="np-controls">
+              <!-- Shuffle -->
+              <button class="ctrl-btn" id="ctrl-shuffle" title="Shuffle" aria-label="Shuffle">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
+                  <polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/>
+                  <line x1="4" y1="4" x2="9" y2="9"/>
+                </svg>
+              </button>
+              <!-- Prev -->
+              <button class="ctrl-btn" id="ctrl-prev" title="Previous" aria-label="Previous">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>
+                </svg>
+              </button>
+              <!-- Play/Pause -->
+              <button class="ctrl-play-btn" id="ctrl-play" title="Play / Pause" aria-label="Play/Pause">
+                <svg id="play-icon" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+              </button>
+              <!-- Next -->
+              <button class="ctrl-btn" id="ctrl-next" title="Next" aria-label="Next">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>
+                </svg>
+              </button>
+              <!-- Repeat -->
+              <button class="ctrl-btn active" id="ctrl-repeat" title="Repeat" aria-label="Repeat">
+                <svg id="repeat-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="17 1 21 5 17 9"/>
+                  <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                  <polyline points="7 23 3 19 7 15"/>
+                  <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                </svg>
+              </button>
             </div>
-            <span id="total-time" class="time-label">0:00</span>
-          </div>
-        </div>
 
-        <!-- Right: Visualizer & Volume -->
-        <div class="player-right">
-          <canvas id="visualizer-canvas" class="visualizer-canvas" width="100" height="36"></canvas>
-
-          <div class="volume-container">
-            <button id="btn-volume-toggle" class="ctrl-btn" title="Mute (M)">
-              <svg id="volume-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-            </button>
-            <input type="range" id="volume-slider" class="volume-slider" min="0" max="1" step="0.01" value="0.8" />
+            <!-- Volume -->
+            <div class="np-volume">
+              <button class="ctrl-btn" id="btn-mute" title="Mute" aria-label="Mute" style="width:30px;height:30px;">
+                <svg id="vol-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                </svg>
+              </button>
+              <input type="range" class="vol-slider" id="vol-slider" min="0" max="1" step="0.01" value="0.8" />
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- URL Audio Downloader Modal -->
-      <div id="modal-downloader" class="modal-overlay">
+      <!-- ═══ DOWNLOAD MODAL ═══ -->
+      <div class="modal-overlay" id="modal-dl" role="dialog" aria-modal="true" aria-label="Add song from URL">
         <div class="modal-card">
+          <div class="modal-handle"></div>
           <div class="modal-header">
-            <div class="modal-title">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              <span>Download Audio from URL</span>
+            <div class="modal-title-row">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              <span class="modal-title-text">Add from URL</span>
             </div>
-            <button id="btn-close-downloader" class="btn-close-modal">&times;</button>
+            <button class="btn-close" id="btn-close-dl" aria-label="Close">&#x2715;</button>
           </div>
 
           <div class="modal-body">
             <div class="form-group">
-              <label class="form-label">Media URL (YouTube, SoundCloud, or Direct Audio Link)</label>
-              <div style="display: flex; gap: 8px;">
-                <input type="url" id="input-download-url" class="form-input" style="flex: 1;" placeholder="https://www.youtube.com/watch?v=... or direct .mp3" />
-                <button id="btn-inspect-url" class="btn-secondary" style="display: flex; align-items: center; gap: 6px;">
-                  <span>Inspect</span>
+              <label class="form-label" for="url-input">YouTube, SoundCloud or direct audio link</label>
+              <div class="url-row">
+                <input type="url" id="url-input" class="form-input"
+                  placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" />
+                <button class="btn-inspect" id="btn-inspect" aria-label="Inspect URL">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                  Inspect
                 </button>
               </div>
             </div>
 
-            <!-- Preview Card (Hidden initially) -->
-            <div id="download-preview-box" class="preview-box" style="display: none;">
-              <img id="preview-thumb" class="preview-thumb" src="" alt="Thumbnail" />
-              <div class="preview-details">
-                <div id="preview-title" class="preview-title">Title</div>
-                <div id="preview-artist" class="preview-artist">Artist</div>
-                <div class="status-pill">
-                  <span id="preview-duration">0:00</span> • Ready to download
-                </div>
+            <!-- Preview (hidden until inspected) -->
+            <div class="preview-box" id="preview-box" style="display:none">
+              <img class="preview-thumb" id="preview-thumb" src="" alt="Thumbnail" />
+              <div>
+                <div class="pv-title" id="pv-title">—</div>
+                <div class="pv-artist" id="pv-artist">—</div>
+                <div class="pv-duration" id="pv-duration">—</div>
               </div>
             </div>
 
-            <div id="download-edit-fields" style="display: none; flex-direction: column; gap: 12px;">
+            <!-- Edit fields (hidden until inspected) -->
+            <div id="edit-fields" style="display:none;flex-direction:column;gap:12px;">
               <div class="form-group">
-                <label class="form-label">Customize Track Title (Optional)</label>
-                <input type="text" id="input-custom-title" class="form-input" placeholder="Title" />
+                <label class="form-label" for="custom-title">Title (optional)</label>
+                <input type="text" id="custom-title" class="form-input" placeholder="Track title" />
               </div>
               <div class="form-group">
-                <label class="form-label">Customize Artist Name (Optional)</label>
-                <input type="text" id="input-custom-artist" class="form-input" placeholder="Artist" />
+                <label class="form-label" for="custom-artist">Artist (optional)</label>
+                <input type="text" id="custom-artist" class="form-input" placeholder="Artist name" />
               </div>
             </div>
 
-            <div id="download-progress-status" style="display: none;" class="status-pill">
+            <!-- Download progress -->
+            <div class="dl-status" id="dl-status" style="display:none">
               <div class="spinner"></div>
-              <span id="download-progress-text">Extracting audio & transcoding...</span>
+              <span id="dl-status-text">Downloading &amp; extracting audio…</span>
             </div>
           </div>
 
-          <div class="modal-footer" style="display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
-            <button id="btn-cancel-downloader" class="btn-secondary">Cancel</button>
-            <button id="btn-confirm-stream" class="btn-primary" style="background: linear-gradient(135deg, #06b6d4, #3b82f6); box-shadow: 0 4px 14px rgba(6, 182, 212, 0.4);" disabled>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-              <span>⚡ Stream & Save to Favorites (0 MB)</span>
-            </button>
-            <button id="btn-confirm-download" class="btn-secondary" style="border-color: var(--primary); color: #c4b5fd;" disabled>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              <span>💾 Download to Drive</span>
+          <div class="modal-footer">
+            <button class="btn-ghost" id="btn-cancel-dl">Cancel</button>
+            <button class="btn-lime" id="btn-download" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download to Drive
             </button>
           </div>
         </div>
       </div>
 
-      <!-- Cloud Storage Settings Modal -->
-      <div id="modal-settings" class="modal-overlay">
+      <!-- ═══ SETTINGS MODAL ═══ -->
+      <div class="modal-overlay" id="modal-settings" role="dialog" aria-modal="true" aria-label="Cloud storage settings">
         <div class="modal-card">
+          <div class="modal-handle"></div>
           <div class="modal-header">
-            <div class="modal-title">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
-              <span>Cloud Storage Settings</span>
+            <div class="modal-title-row">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+              </svg>
+              <span class="modal-title-text">Cloud Storage</span>
             </div>
-            <button id="btn-close-settings" class="btn-close-modal">&times;</button>
+            <button class="btn-close" id="btn-close-settings" aria-label="Close">&#x2715;</button>
           </div>
 
           <div class="modal-body">
             <div class="form-group">
-              <label class="form-label">Storage Provider</label>
-              <select id="select-provider" class="form-input">
-                <option value="local">Local Storage (Fastest, zero setup)</option>
-                <option value="supabase">Supabase Cloud Storage (Free 1GB, S3 CDN)</option>
+              <label class="form-label" for="provider-select">Storage Provider</label>
+              <select id="provider-select" class="form-input">
+                <option value="local">Local Storage (fastest, zero setup)</option>
+                <option value="supabase">Supabase Cloud (free 1 GB CDN)</option>
               </select>
             </div>
-
-            <div id="supabase-fields" style="display: none; flex-direction: column; gap: 14px;">
+            <div id="supa-fields" style="display:none;flex-direction:column;gap:12px;">
               <div class="form-group">
-                <label class="form-label">Supabase Project URL</label>
-                <input type="text" id="input-supa-url" class="form-input" placeholder="https://your-project.supabase.co" />
+                <label class="form-label" for="supa-url">Project URL</label>
+                <input type="text" id="supa-url" class="form-input" placeholder="https://your-project.supabase.co" />
               </div>
               <div class="form-group">
-                <label class="form-label">Supabase API Key (Anon or Service Role)</label>
-                <input type="password" id="input-supa-key" class="form-input" placeholder="eyJhbGci..." />
+                <label class="form-label" for="supa-key">API Key (anon or service role)</label>
+                <input type="password" id="supa-key" class="form-input" placeholder="eyJhbGci…" />
               </div>
               <div class="form-group">
-                <label class="form-label">Storage Bucket Name</label>
-                <input type="text" id="input-supa-bucket" class="form-input" value="music" placeholder="music" />
+                <label class="form-label" for="supa-bucket">Bucket Name</label>
+                <input type="text" id="supa-bucket" class="form-input" value="music" placeholder="music" />
               </div>
             </div>
           </div>
 
           <div class="modal-footer">
-            <button id="btn-cancel-settings" class="btn-secondary">Close</button>
-            <button id="btn-save-settings" class="btn-primary">Save Settings</button>
+            <button class="btn-ghost" id="btn-cancel-settings">Close</button>
+            <button class="btn-lime" id="btn-save-settings">Save</button>
           </div>
         </div>
       </div>
 
-      <!-- Toast Container -->
-      <div id="toast-container" class="toast-container"></div>
+      <!-- ═══ TOAST ZONE ═══ -->
+      <div class="toast-zone" id="toast-zone" aria-live="polite"></div>
     `;
   }
 
-  private attachEventListeners() {
-    // Navigation
-    document.getElementById('nav-library')!.addEventListener('click', () => {
-      this.activeTab = 'library';
-      document.getElementById('nav-library')!.classList.add('active');
-      document.getElementById('nav-favorites')!.classList.remove('active');
-      document.getElementById('library-heading')!.textContent = 'All Songs';
-      this.renderTrackList();
-    });
+  // ──────────────────────────────────────────
+  // EVENT LISTENERS
+  // ──────────────────────────────────────────
 
-    document.getElementById('nav-favorites')!.addEventListener('click', () => {
-      this.activeTab = 'favorites';
-      document.getElementById('nav-favorites')!.classList.add('active');
-      document.getElementById('nav-library')!.classList.remove('active');
-      document.getElementById('library-heading')!.textContent = 'Favorite Songs';
-      this.renderTrackList();
-    });
+  private attachListeners() {
+    // ── Filter pills ──
+    this.$('pill-all').addEventListener('click', () => this.setFilter('all'));
+    this.$('pill-liked').addEventListener('click', () => this.setFilter('liked'));
 
-    // Search
-    document.getElementById('search-input')!.addEventListener('input', (e) => {
+    // ── Search ──
+    this.$('search-input').addEventListener('input', (e) => {
       this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
       this.renderTrackList();
     });
 
-    // Modals
-    const downloaderModal = document.getElementById('modal-downloader')!;
-    const settingsModal = document.getElementById('modal-settings')!;
-
-    const openDownloader = () => {
-      downloaderModal.classList.add('active');
-      document.getElementById('input-download-url')?.focus();
+    // ── Download modal ──
+    const openDl = () => {
+      this.$('modal-dl').classList.add('active');
+      this.$<HTMLInputElement>('url-input').focus();
+    };
+    const closeDl = () => {
+      this.$('modal-dl').classList.remove('active');
+      this.resetDlModal();
     };
 
-    const closeDownloader = () => {
-      downloaderModal.classList.remove('active');
-      this.resetDownloaderModal();
-    };
+    this.$('btn-open-dl').addEventListener('click', openDl);
+    this.$('btn-close-dl').addEventListener('click', closeDl);
+    this.$('btn-cancel-dl').addEventListener('click', closeDl);
 
-    document.getElementById('btn-open-downloader')!.addEventListener('click', openDownloader);
-    document.getElementById('btn-quick-url')!.addEventListener('click', openDownloader);
-    document.getElementById('btn-close-downloader')!.addEventListener('click', closeDownloader);
-    document.getElementById('btn-cancel-downloader')!.addEventListener('click', closeDownloader);
-
-    document.getElementById('btn-open-settings')!.addEventListener('click', () => {
-      settingsModal.classList.add('active');
-    });
-    document.getElementById('btn-close-settings')!.addEventListener('click', () => {
-      settingsModal.classList.remove('active');
-    });
-    document.getElementById('btn-cancel-settings')!.addEventListener('click', () => {
-      settingsModal.classList.remove('active');
+    // Close on backdrop click
+    this.$('modal-dl').addEventListener('click', (e) => {
+      if (e.target === this.$('modal-dl')) closeDl();
     });
 
-    // Downloader Actions
-    document.getElementById('btn-inspect-url')!.addEventListener('click', () => this.handleInspectUrl());
-    document.getElementById('input-download-url')!.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this.handleInspectUrl();
+    this.$('btn-inspect').addEventListener('click', () => this.handleInspect());
+    this.$<HTMLInputElement>('url-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this.handleInspect();
     });
-    document.getElementById('btn-confirm-download')!.addEventListener('click', () => this.handleStartDownload());
-    document.getElementById('btn-confirm-stream')!.addEventListener('click', () => this.handleStreamAndBookmark());
+    this.$('btn-download').addEventListener('click', () => this.handleDownload());
 
-    // Settings actions
-    const selectProvider = document.getElementById('select-provider') as HTMLSelectElement;
-    const supaFields = document.getElementById('supabase-fields')!;
-    selectProvider.addEventListener('change', () => {
-      supaFields.style.display = selectProvider.value === 'supabase' ? 'flex' : 'none';
+    // ── Settings modal ──
+    const openSettings = () => this.$('modal-settings').classList.add('active');
+    const closeSettings = () => this.$('modal-settings').classList.remove('active');
+
+    this.$('btn-open-settings').addEventListener('click', openSettings);
+    this.$('btn-close-settings').addEventListener('click', closeSettings);
+    this.$('btn-cancel-settings').addEventListener('click', closeSettings);
+    this.$('modal-settings').addEventListener('click', (e) => {
+      if (e.target === this.$('modal-settings')) closeSettings();
     });
 
-    document.getElementById('btn-save-settings')!.addEventListener('click', () => this.handleSaveSettings());
+    const providerSelect = this.$<HTMLSelectElement>('provider-select');
+    providerSelect.addEventListener('change', () => {
+      this.$('supa-fields').style.display =
+        providerSelect.value === 'supabase' ? 'flex' : 'none';
+    });
+    this.$('btn-save-settings').addEventListener('click', () => this.handleSaveSettings());
 
-    // Hero Play Button
-    document.getElementById('btn-hero-play')!.addEventListener('click', () => {
-      if (this.tracks.length > 0) {
-        this.playTrack(0);
+    // ── Now playing mobile navigation ──
+    this.$('np-back').addEventListener('click', () => this.closeNowPlaying());
+    this.$('mini-player').addEventListener('click', (e) => {
+      if (!(e.target as HTMLElement).closest('.mini-btn, .mini-play-btn')) {
+        this.openNowPlaying();
       }
     });
 
-    // Controls
-    document.getElementById('ctrl-play')!.addEventListener('click', () => this.togglePlay());
-    document.getElementById('ctrl-prev')!.addEventListener('click', () => this.prevTrack());
-    document.getElementById('ctrl-next')!.addEventListener('click', () => this.nextTrack());
+    // ── Player controls ──
+    this.$('ctrl-play').addEventListener('click', () => this.togglePlay());
+    this.$('ctrl-prev').addEventListener('click', () => this.prevTrack());
+    this.$('ctrl-next').addEventListener('click', () => this.nextTrack());
+    this.$('mini-play').addEventListener('click', (e) => { e.stopPropagation(); this.togglePlay(); });
+    this.$('mini-prev').addEventListener('click', (e) => { e.stopPropagation(); this.prevTrack(); });
+    this.$('mini-next').addEventListener('click', (e) => { e.stopPropagation(); this.nextTrack(); });
 
-    document.getElementById('ctrl-shuffle')!.addEventListener('click', () => {
+    this.$('ctrl-shuffle').addEventListener('click', () => {
       this.isShuffle = !this.isShuffle;
-      document.getElementById('ctrl-shuffle')!.classList.toggle('active', this.isShuffle);
-      this.showToast(this.isShuffle ? 'Shuffle enabled' : 'Shuffle disabled');
+      this.$('ctrl-shuffle').classList.toggle('active', this.isShuffle);
+      this.toast(this.isShuffle ? 'Shuffle on' : 'Shuffle off');
     });
 
-    document.getElementById('ctrl-repeat')!.addEventListener('click', () => {
+    this.$('ctrl-repeat').addEventListener('click', () => {
       const modes: Array<'off' | 'all' | 'one'> = ['off', 'all', 'one'];
-      const nextIndex = (modes.indexOf(this.repeatMode) + 1) % modes.length;
-      this.repeatMode = modes[nextIndex];
-      const repeatBtn = document.getElementById('ctrl-repeat')!;
-      repeatBtn.classList.toggle('active', this.repeatMode !== 'off');
-      this.showToast(`Repeat mode: ${this.repeatMode.toUpperCase()}`);
+      const idx = (modes.indexOf(this.repeatMode) + 1) % modes.length;
+      this.repeatMode = modes[idx];
+      this.$('ctrl-repeat').classList.toggle('active', this.repeatMode !== 'off');
+      const labels: Record<string, string> = { off: 'Repeat off', all: 'Repeat all', one: 'Repeat one' };
+      this.toast(labels[this.repeatMode]);
+      this.updateRepeatIcon();
     });
 
-    // Seek bar
-    const seekBar = document.getElementById('seek-bar')!;
-    seekBar.addEventListener('click', (e) => {
-      const rect = seekBar.getBoundingClientRect();
-      const clickX = e.clientX - rect.left;
-      const percentage = clickX / rect.width;
-      if (this.audio.duration) {
-        this.audio.currentTime = percentage * this.audio.duration;
-      }
+    // ── Seek bar ──
+    this.$('seek-bar').addEventListener('click', (e) => {
+      const rect = this.$('seek-bar').getBoundingClientRect();
+      const pct = (e.clientX - rect.left) / rect.width;
+      if (this.audio.duration) this.audio.currentTime = pct * this.audio.duration;
     });
 
-    // Volume
-    const volumeSlider = document.getElementById('volume-slider') as HTMLInputElement;
-    volumeSlider.addEventListener('input', () => {
-      this.volume = parseFloat(volumeSlider.value);
+    // ── Volume ──
+    const volSlider = this.$<HTMLInputElement>('vol-slider');
+    volSlider.addEventListener('input', () => {
+      this.volume = parseFloat(volSlider.value);
       this.audio.volume = this.volume;
       this.isMuted = this.volume === 0;
-      this.updateVolumeIcon();
+      this.updateVolIcon();
     });
-
-    document.getElementById('btn-volume-toggle')!.addEventListener('click', () => {
+    this.$('btn-mute').addEventListener('click', () => {
       this.isMuted = !this.isMuted;
       this.audio.muted = this.isMuted;
-      this.updateVolumeIcon();
+      this.updateVolIcon();
     });
 
-    // Favorites in player bar
-    document.getElementById('player-fav-btn')!.addEventListener('click', () => {
-      if (this.currentTrack) {
-        this.toggleFavorite(this.currentTrack.id);
-      }
+    // ── NP fav button ──
+    this.$('np-fav').addEventListener('click', () => {
+      if (this.currentTrack) this.toggleFav(this.currentTrack.id);
     });
   }
 
+  // ──────────────────────────────────────────
+  // AUDIO EVENTS
+  // ──────────────────────────────────────────
+
   private initAudioEvents() {
     this.audio.addEventListener('timeupdate', () => {
-      const current = this.audio.currentTime;
-      const total = this.audio.duration || 0;
-      document.getElementById('current-time')!.textContent = this.formatTime(current);
-      document.getElementById('total-time')!.textContent = this.formatTime(total);
-      
-      const percentage = total > 0 ? (current / total) * 100 : 0;
-      document.getElementById('seek-fill')!.style.width = `${percentage}%`;
+      const cur = this.audio.currentTime;
+      const tot = this.audio.duration || 0;
+      this.$('current-time').textContent = this.fmt(cur);
+      this.$('total-time').textContent = this.fmt(tot);
+      const pct = tot > 0 ? (cur / tot) * 100 : 0;
+      this.$('seek-fill').style.width = `${Math.min(pct, 100)}%`;
     });
 
     this.audio.addEventListener('ended', () => {
@@ -513,32 +531,31 @@ class MusicPlayerApp {
 
     this.audio.addEventListener('play', () => {
       this.isPlaying = true;
-      this.updatePlayPauseUI();
-      this.startVisualizer();
-      document.getElementById('player-thumb')?.classList.add('rotating');
+      this.updatePlayUI();
+      this.$('artwork-img').classList.add('spinning');
     });
 
     this.audio.addEventListener('pause', () => {
       this.isPlaying = false;
-      this.updatePlayPauseUI();
-      this.stopVisualizer();
-      document.getElementById('player-thumb')?.classList.remove('rotating');
+      this.updatePlayUI();
+      this.$('artwork-img').classList.remove('spinning');
     });
 
-    this.audio.addEventListener('error', (e) => {
-      console.error('Audio playback error:', e);
-      this.showToast('Error playing audio stream', 'error');
+    this.audio.addEventListener('error', () => {
+      this.toast('Error playing audio', 'error');
       this.isPlaying = false;
-      this.updatePlayPauseUI();
+      this.updatePlayUI();
     });
   }
 
-  private initKeyboardShortcuts() {
+  // ──────────────────────────────────────────
+  // KEYBOARD SHORTCUTS
+  // ──────────────────────────────────────────
+
+  private initKeyboard() {
     window.addEventListener('keydown', (e) => {
-      // Don't trigger if typing in an input
-      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'SELECT') {
-        return;
-      }
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
       switch (e.code) {
         case 'Space':
@@ -547,7 +564,10 @@ class MusicPlayerApp {
           break;
         case 'ArrowRight':
           e.preventDefault();
-          this.audio.currentTime = Math.min(this.audio.currentTime + 5, this.audio.duration || 0);
+          this.audio.currentTime = Math.min(
+            this.audio.currentTime + 5,
+            this.audio.duration || 0
+          );
           break;
         case 'ArrowLeft':
           e.preventDefault();
@@ -557,23 +577,23 @@ class MusicPlayerApp {
           e.preventDefault();
           this.volume = Math.min(this.volume + 0.05, 1);
           this.audio.volume = this.volume;
-          (document.getElementById('volume-slider') as HTMLInputElement).value = this.volume.toString();
+          this.$<HTMLInputElement>('vol-slider').value = this.volume.toString();
           this.isMuted = false;
-          this.updateVolumeIcon();
+          this.updateVolIcon();
           break;
         case 'ArrowDown':
           e.preventDefault();
           this.volume = Math.max(this.volume - 0.05, 0);
           this.audio.volume = this.volume;
-          (document.getElementById('volume-slider') as HTMLInputElement).value = this.volume.toString();
+          this.$<HTMLInputElement>('vol-slider').value = this.volume.toString();
           this.isMuted = this.volume === 0;
-          this.updateVolumeIcon();
+          this.updateVolIcon();
           break;
         case 'KeyM':
           e.preventDefault();
           this.isMuted = !this.isMuted;
           this.audio.muted = this.isMuted;
-          this.updateVolumeIcon();
+          this.updateVolIcon();
           break;
         case 'KeyN':
           e.preventDefault();
@@ -587,87 +607,196 @@ class MusicPlayerApp {
     });
   }
 
-  private setupAudioVisualizer() {
-    if (this.audioCtx) return;
-    try {
-      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.audioCtx = new AudioContextClass();
-      this.analyser = this.audioCtx.createAnalyser();
-      this.analyser.fftSize = 64;
-      const source = this.audioCtx.createMediaElementSource(this.audio);
-      source.connect(this.analyser);
-      this.analyser.connect(this.audioCtx.destination);
-      this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
-    } catch (e) {
-      console.warn('Web Audio API initialized on user gesture:', e);
-    }
+  // ──────────────────────────────────────────
+  // VIEW NAVIGATION (mobile)
+  // ──────────────────────────────────────────
+
+  private openNowPlaying() {
+    this.$('now-playing-panel').classList.add('open');
+    document.body.style.overflow = 'hidden';
   }
 
-  private startVisualizer() {
-    const canvas = document.getElementById('visualizer-canvas') as HTMLCanvasElement;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    this.setupAudioVisualizer();
-
-    const draw = () => {
-      this.visualizerAnimationId = requestAnimationFrame(draw);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      if (this.analyser && this.dataArray) {
-        (this.analyser as any).getByteFrequencyData(this.dataArray);
-        const barWidth = (canvas.width / 16) - 2;
-        let x = 0;
-
-        for (let i = 0; i < 16; i++) {
-          const barHeight = (this.dataArray[i * 2] / 255) * canvas.height;
-          const gradient = ctx.createLinearGradient(0, canvas.height, 0, 0);
-          gradient.addColorStop(0, '#8b5cf6');
-          gradient.addColorStop(1, '#06b6d4');
-
-          ctx.fillStyle = gradient;
-          ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-          x += barWidth + 2;
-        }
-      } else {
-        // Subtle idle wave
-        for (let i = 0; i < 16; i++) {
-          const h = Math.sin(Date.now() / 200 + i) * 6 + 8;
-          ctx.fillStyle = 'rgba(139, 92, 246, 0.4)';
-          ctx.fillRect(i * 6, canvas.height - h, 4, h);
-        }
-      }
-    };
-
-    if (this.visualizerAnimationId) cancelAnimationFrame(this.visualizerAnimationId);
-    draw();
+  private closeNowPlaying() {
+    this.$('now-playing-panel').classList.remove('open');
+    document.body.style.overflow = '';
   }
 
-  private stopVisualizer() {
-    if (this.visualizerAnimationId) {
-      cancelAnimationFrame(this.visualizerAnimationId);
-      this.visualizerAnimationId = null;
-    }
-    const canvas = document.getElementById('visualizer-canvas') as HTMLCanvasElement;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      ctx?.clearRect(0, 0, canvas.width, canvas.height);
-    }
-  }
+  // ──────────────────────────────────────────
+  // FILTER
+  // ──────────────────────────────────────────
 
-  private updatePlayPauseUI() {
-    const icon = document.getElementById('play-pause-icon')!;
-    if (this.isPlaying) {
-      icon.innerHTML = `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`;
-    } else {
-      icon.innerHTML = `<polygon points="5 3 19 12 5 21 5 3"/>`;
-    }
+  private setFilter(f: 'all' | 'liked') {
+    this.activeFilter = f;
+    this.$('pill-all').classList.toggle('active', f === 'all');
+    this.$('pill-liked').classList.toggle('active', f === 'liked');
     this.renderTrackList();
   }
 
-  private updateVolumeIcon() {
-    const icon = document.getElementById('volume-icon')!;
+  private getFiltered(): Track[] {
+    return this.tracks.filter((t) => {
+      const q = this.searchQuery;
+      const matchSearch =
+        !q ||
+        t.title.toLowerCase().includes(q) ||
+        t.artist.toLowerCase().includes(q);
+      if (!matchSearch) return false;
+      if (this.activeFilter === 'liked') return this.favorites.has(t.id);
+      return true;
+    });
+  }
+
+  // ──────────────────────────────────────────
+  // PLAYBACK
+  // ──────────────────────────────────────────
+
+  private playTrack(index: number) {
+    const list = this.getFiltered();
+    if (index < 0 || index >= list.length) return;
+
+    this.currentTrack = list[index];
+    this.audio.src = this.resolveAudioUrl(this.currentTrack.audio_url);
+    this.audio.load();
+
+    // Setup audio context lazily on user gesture
+    if (!this.audioCtx) {
+      try {
+        const Ctx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext })
+            .webkitAudioContext;
+        this.audioCtx = new Ctx();
+        this.analyser = this.audioCtx.createAnalyser();
+        const src = this.audioCtx.createMediaElementSource(this.audio);
+        src.connect(this.analyser);
+        this.analyser.connect(this.audioCtx.destination);
+      } catch (_) {}
+    }
+
+    if (this.audioCtx?.state === 'suspended') this.audioCtx.resume();
+    this.audio.play().catch(() => {});
+
+    this.updateNowPlayingUI();
+    this.updateMiniPlayer();
+    this.renderTrackList();
+  }
+
+  private togglePlay() {
+    if (!this.currentTrack) {
+      if (this.tracks.length > 0) this.playTrack(0);
+      return;
+    }
+    if (this.isPlaying) {
+      this.audio.pause();
+    } else {
+      if (this.audioCtx?.state === 'suspended') this.audioCtx.resume();
+      this.audio.play().catch(() => {});
+    }
+  }
+
+  private nextTrack() {
+    const list = this.getFiltered();
+    if (list.length === 0) return;
+    if (this.isShuffle) {
+      this.playTrack(Math.floor(Math.random() * list.length));
+      return;
+    }
+    const cur = list.findIndex((t) => t.id === this.currentTrack?.id);
+    this.playTrack((cur + 1) % list.length);
+  }
+
+  private prevTrack() {
+    const list = this.getFiltered();
+    if (list.length === 0) return;
+    const cur = list.findIndex((t) => t.id === this.currentTrack?.id);
+    this.playTrack((cur - 1 + list.length) % list.length);
+  }
+
+  // ──────────────────────────────────────────
+  // FAVORITES
+  // ──────────────────────────────────────────
+
+  private toggleFav(id: string) {
+    if (this.favorites.has(id)) {
+      this.favorites.delete(id);
+      this.toast('Removed from liked songs');
+    } else {
+      this.favorites.add(id);
+      this.toast('Added to liked songs ♥');
+    }
+    localStorage.setItem(
+      'soundvault_favs',
+      JSON.stringify(Array.from(this.favorites))
+    );
+    this.updateNpFavBtn();
+    this.renderTrackList();
+  }
+
+  // ──────────────────────────────────────────
+  // UI UPDATES
+  // ──────────────────────────────────────────
+
+  private updateNowPlayingUI() {
+    if (!this.currentTrack) return;
+    const t = this.currentTrack;
+
+    // Show active content, hide idle
+    this.$('np-idle').style.display = 'none';
+    this.$('np-active').classList.add('visible');
+
+    // Artwork
+    const img = this.$<HTMLImageElement>('artwork-img');
+    img.src = t.thumbnail;
+
+    // Glow — use a dominant color approximation (just set background to accent-ish)
+    this.$('artwork-glow').style.background =
+      `radial-gradient(circle, rgba(200,255,0,0.6) 0%, transparent 70%)`;
+
+    // Track info
+    this.$('np-title').textContent = t.title;
+    this.$('np-artist').textContent = t.artist;
+
+    // Reset seek
+    this.$('seek-fill').style.width = '0%';
+    this.$('current-time').textContent = '0:00';
+    this.$('total-time').textContent = this.fmt(t.duration);
+
+    this.updateNpFavBtn();
+  }
+
+  private updateNpFavBtn() {
+    const isFav = !!this.currentTrack && this.favorites.has(this.currentTrack.id);
+    const btn = this.$('np-fav');
+    const icon = this.$('np-fav-icon');
+    btn.classList.toggle('active', isFav);
+    icon.setAttribute('fill', isFav ? 'currentColor' : 'none');
+    icon.setAttribute('stroke', 'currentColor');
+  }
+
+  private updateMiniPlayer() {
+    if (!this.currentTrack) {
+      this.$('mini-player').classList.add('hidden');
+      return;
+    }
+    this.$('mini-player').classList.remove('hidden');
+    this.$<HTMLImageElement>('mini-art').src = this.currentTrack.thumbnail;
+    this.$('mini-title').textContent = this.currentTrack.title;
+    this.$('mini-artist').textContent = this.currentTrack.artist;
+  }
+
+  private updatePlayUI() {
+    const icon = this.$('play-icon');
+    const miniIcon = this.$('mini-play-icon');
+    if (this.isPlaying) {
+      icon.innerHTML = `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`;
+      miniIcon.innerHTML = `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`;
+    } else {
+      icon.innerHTML = `<polygon points="5 3 19 12 5 21 5 3"/>`;
+      miniIcon.innerHTML = `<polygon points="5 3 19 12 5 21 5 3"/>`;
+    }
+  }
+
+  private updateVolIcon() {
+    const icon = this.$('vol-icon');
     if (this.isMuted || this.volume === 0) {
       icon.innerHTML = `<line x1="1" y1="1" x2="23" y2="23"/><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>`;
     } else if (this.volume < 0.5) {
@@ -677,281 +806,149 @@ class MusicPlayerApp {
     }
   }
 
-  private togglePlay() {
-    if (!this.currentTrack) {
-      if (this.tracks.length > 0) this.playTrack(0);
-      return;
-    }
-
-    if (this.isPlaying) {
-      this.audio.pause();
+  private updateRepeatIcon() {
+    const icon = this.$('repeat-icon');
+    if (this.repeatMode === 'one') {
+      icon.innerHTML = `
+        <polyline points="17 1 21 5 17 9"/>
+        <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+        <polyline points="7 23 3 19 7 15"/>
+        <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+        <line x1="12" y1="8" x2="12" y2="16"/>
+      `;
     } else {
-      if (this.audioCtx && this.audioCtx.state === 'suspended') {
-        this.audioCtx.resume();
-      }
-      this.audio.play().catch(e => console.log('Play blocked until interaction:', e));
+      icon.innerHTML = `
+        <polyline points="17 1 21 5 17 9"/>
+        <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+        <polyline points="7 23 3 19 7 15"/>
+        <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+      `;
     }
   }
 
-  private getFilteredTracks(): Track[] {
-    return this.tracks.filter(t => {
-      const matchSearch = t.title.toLowerCase().includes(this.searchQuery) ||
-                          t.artist.toLowerCase().includes(this.searchQuery);
-      if (!matchSearch) return false;
-      if (this.activeTab === 'favorites') {
-        return this.favorites.has(t.id);
-      }
-      return true;
-    });
-  }
-
-  private playTrack(index: number) {
-    const filtered = this.getFilteredTracks();
-    if (index < 0 || index >= filtered.length) return;
-
-    this.currentTrack = filtered[index];
-    const streamUrl = this.resolveAudioUrl(this.currentTrack.audio_url);
-    this.audio.src = streamUrl;
-    this.audio.load();
-
-    // Update bottom bar
-    document.getElementById('player-title')!.textContent = this.currentTrack.title;
-    document.getElementById('player-artist')!.textContent = this.currentTrack.artist;
-    (document.getElementById('player-thumb') as HTMLImageElement).src = this.currentTrack.thumbnail;
-    this.updateFavIcon();
-
-    // Update hero banner with current playing
-    document.getElementById('hero-title')!.textContent = this.currentTrack.title;
-    document.getElementById('hero-subtitle')!.textContent = `By ${this.currentTrack.artist} • Enjoy High Fidelity Streaming`;
-
-    if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume();
-    }
-
-    this.audio.play().catch(e => console.log('Playback error:', e));
-    this.renderTrackList();
-  }
-
-  private nextTrack() {
-    const filtered = this.getFilteredTracks();
-    if (filtered.length === 0) return;
-
-    if (this.isShuffle) {
-      const randIndex = Math.floor(Math.random() * filtered.length);
-      this.playTrack(randIndex);
-      return;
-    }
-
-    const currentIndex = filtered.findIndex(t => t.id === this.currentTrack?.id);
-    const nextIndex = (currentIndex + 1) % filtered.length;
-    this.playTrack(nextIndex);
-  }
-
-  private prevTrack() {
-    const filtered = this.getFilteredTracks();
-    if (filtered.length === 0) return;
-
-    const currentIndex = filtered.findIndex(t => t.id === this.currentTrack?.id);
-    const prevIndex = (currentIndex - 1 + filtered.length) % filtered.length;
-    this.playTrack(prevIndex);
-  }
-
-  private toggleFavorite(id: string) {
-    if (this.favorites.has(id)) {
-      this.favorites.delete(id);
-      this.showToast('Removed from favorites');
-    } else {
-      this.favorites.add(id);
-      this.showToast('Saved to favorites');
-    }
-    localStorage.setItem('soundvault_favs', JSON.stringify(Array.from(this.favorites)));
-    this.updateFavIcon();
-    this.renderTrackList();
-  }
-
-  private updateFavIcon() {
-    const isFav = this.currentTrack && this.favorites.has(this.currentTrack.id);
-    const favIcon = document.getElementById('fav-icon')!;
-    if (isFav) {
-      favIcon.setAttribute('fill', '#ec4899');
-      favIcon.setAttribute('stroke', '#ec4899');
-    } else {
-      favIcon.setAttribute('fill', 'none');
-      favIcon.setAttribute('stroke', 'currentColor');
-    }
-  }
-
-  private async fetchConfig() {
-    try {
-      const res = await fetch(`${API_BASE}/api/config`);
-      if (res.ok) {
-        this.cloudConfig = await res.json();
-        this.updateConfigUI();
-      }
-    } catch (e) {
-      console.warn('Backend API connection pending:', e);
-    }
-  }
-
-  private updateConfigUI() {
-    const isSupa = this.cloudConfig.provider === 'supabase' && !!this.cloudConfig.supabase_url;
-    const dot = document.getElementById('cloud-status-dot')!;
-    const name = document.getElementById('cloud-provider-name')!;
-    
-    if (isSupa) {
-      dot.className = 'dot';
-      name.textContent = 'Supabase Drive';
-    } else {
-      dot.className = 'dot';
-      name.textContent = 'Local Server Drive';
-    }
-
-    // Populate settings form
-    (document.getElementById('select-provider') as HTMLSelectElement).value = this.cloudConfig.provider;
-    (document.getElementById('input-supa-url') as HTMLInputElement).value = this.cloudConfig.supabase_url || '';
-    (document.getElementById('input-supa-key') as HTMLInputElement).value = this.cloudConfig.supabase_key || '';
-    (document.getElementById('input-supa-bucket') as HTMLInputElement).value = this.cloudConfig.supabase_bucket || 'music';
-    document.getElementById('supabase-fields')!.style.display = this.cloudConfig.provider === 'supabase' ? 'flex' : 'none';
-  }
-
-  private async handleSaveSettings() {
-    const provider = (document.getElementById('select-provider') as HTMLSelectElement).value;
-    const supabase_url = (document.getElementById('input-supa-url') as HTMLInputElement).value.trim();
-    const supabase_key = (document.getElementById('input-supa-key') as HTMLInputElement).value.trim();
-    const supabase_bucket = (document.getElementById('input-supa-bucket') as HTMLInputElement).value.trim();
-
-    const newConfig: CloudConfig = { provider, supabase_url, supabase_key, supabase_bucket };
-
-    try {
-      const res = await fetch(`${API_BASE}/api/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newConfig)
-      });
-      if (res.ok) {
-        this.cloudConfig = newConfig;
-        this.updateConfigUI();
-        document.getElementById('modal-settings')!.classList.remove('active');
-        this.showToast('Storage settings saved!');
-      } else {
-        this.showToast('Failed to save settings', 'error');
-      }
-    } catch (e) {
-      this.showToast('Could not reach backend', 'error');
-    }
-  }
-
-  private async fetchTracks() {
-    try {
-      const res = await fetch(`${API_BASE}/api/tracks`);
-      if (res.ok) {
-        const data = await res.json();
-        this.tracks = data.tracks || [];
-        this.renderTrackList();
-        if (this.tracks.length > 0 && !this.currentTrack) {
-          // Pre-load first track info
-          const first = this.tracks[0];
-          document.getElementById('player-title')!.textContent = first.title;
-          document.getElementById('player-artist')!.textContent = first.artist;
-          (document.getElementById('player-thumb') as HTMLImageElement).src = first.thumbnail;
-          document.getElementById('total-time')!.textContent = this.formatTime(first.duration);
-        }
-      }
-    } catch (e) {
-      console.warn('Backend server not reachable yet:', e);
-    }
-  }
+  // ──────────────────────────────────────────
+  // TRACK LIST RENDER
+  // ──────────────────────────────────────────
 
   private renderTrackList() {
-    const tbody = document.getElementById('track-table-body')!;
-    const filtered = this.getFilteredTracks();
-    document.getElementById('track-count')!.textContent = `${filtered.length} tracks`;
+    const container = this.$('track-list');
+    const list = this.getFiltered();
+    const count = list.length;
 
-    if (filtered.length === 0) {
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="5">
-            <div class="empty-state">
-              <div class="empty-icon">🎧</div>
-              <h3>No songs found</h3>
-              <p>Download your favorite music from a YouTube or direct audio URL above!</p>
-            </div>
-          </td>
-        </tr>
+    if (count === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <span class="empty-icon">🎧</span>
+          <h3>${this.activeFilter === 'liked' ? 'No liked songs yet' : 'No songs found'}</h3>
+          <p>${
+            this.activeFilter === 'liked'
+              ? 'Heart a track to see it here'
+              : 'Tap + to download music from a YouTube or direct audio URL'
+          }</p>
+        </div>
       `;
       return;
     }
 
-    tbody.innerHTML = filtered.map((track, index) => {
-      const isCurrent = this.currentTrack?.id === track.id;
-      const isFav = this.favorites.has(track.id);
-      const isStream = !!track.is_stream || track.id.startsWith('stream-');
-      const isCloud = track.audio_url.startsWith('http') && !track.audio_url.includes('127.0.0.1');
+    container.innerHTML = list
+      .map((track, idx) => {
+        const isCurrent = this.currentTrack?.id === track.id;
+        const isFav = this.favorites.has(track.id);
 
-      let storageBadgeHtml = '';
-      if (isStream) {
-        storageBadgeHtml = `<span class="storage-badge" style="background: rgba(139, 92, 246, 0.2); color: #c4b5fd; border-color: rgba(139, 92, 246, 0.4);">⚡ Live Stream (0 MB)</span>`;
-      } else if (isCloud) {
-        storageBadgeHtml = `<span class="storage-badge">☁ Cloud Drive</span>`;
-      } else {
-        storageBadgeHtml = `<span class="storage-badge local">💻 Local Drive</span>`;
-      }
-
-      return `
-        <tr class="track-row ${isCurrent ? 'playing' : ''}" data-id="${track.id}" data-index="${index}">
-          <td class="track-num-col">
-            ${isCurrent && this.isPlaying ? '▶' : index + 1}
-          </td>
-          <td>
-            <div class="track-info-cell">
-              <img class="track-thumb" src="${track.thumbnail}" alt="" />
-              <div class="track-meta">
-                <span class="track-name" title="${track.title}">${track.title}</span>
-                <span class="track-artist">${track.artist}</span>
-              </div>
+        return `
+          <div class="track-item${isCurrent ? ' active' : ''}"
+               data-index="${idx}" role="button" tabindex="0" aria-label="Play ${track.title}">
+            <img class="track-artwork"
+                 src="${track.thumbnail}"
+                 alt="${track.title}"
+                 loading="lazy"
+                 onerror="this.style.visibility='hidden'" />
+            <div class="track-meta">
+              <span class="track-name" title="${track.title}">${track.title}</span>
+              <span class="track-sub">${track.artist} · ${this.fmt(track.duration)}</span>
             </div>
-          </td>
-          <td style="color: var(--text-muted); font-size: 13px;">
-            ${this.formatTime(track.duration)}
-          </td>
-          <td>
-            ${storageBadgeHtml}
-          </td>
-          <td style="text-align: right;">
-            <button class="track-action-btn btn-row-fav" data-id="${track.id}" title="${isFav ? 'Unfavorite' : 'Favorite'}">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="${isFav ? '#ec4899' : 'none'}" stroke="${isFav ? '#ec4899' : 'currentColor'}" stroke-width="2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
-            </button>
-            <button class="track-action-btn delete btn-row-del" data-id="${track.id}" title="Delete song">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            </button>
-          </td>
-        </tr>
-      `;
-    }).join('');
+            <div class="track-right">
+              <button class="track-icon-btn fav-btn${isFav ? ' fav-active' : ''}"
+                      data-id="${track.id}"
+                      title="${isFav ? 'Unlike' : 'Like'}"
+                      aria-label="${isFav ? 'Unlike' : 'Like'}">
+                <svg width="14" height="14" viewBox="0 0 24 24"
+                     fill="${isFav ? 'currentColor' : 'none'}"
+                     stroke="currentColor" stroke-width="2">
+                  <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+                </svg>
+              </button>
+              <button class="track-icon-btn del del-btn"
+                      data-id="${track.id}"
+                      title="Delete"
+                      aria-label="Delete">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+              <button class="track-play-btn play-track-btn"
+                      data-index="${idx}"
+                      title="${isCurrent && this.isPlaying ? 'Pause' : 'Play'}"
+                      aria-label="${isCurrent && this.isPlaying ? 'Pause' : 'Play'}">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  ${
+                    isCurrent && this.isPlaying
+                      ? `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`
+                      : `<polygon points="5 3 19 12 5 21 5 3"/>`
+                  }
+                </svg>
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
 
-    // Attach row listeners
-    tbody.querySelectorAll('.track-row').forEach(row => {
+    // Row click → play + open Now Playing on mobile
+    container.querySelectorAll('.track-item').forEach((row) => {
       row.addEventListener('click', (e) => {
-        // Prevent click if clicked on action button
-        if ((e.target as HTMLElement).closest('.track-action-btn')) return;
-        const index = parseInt((row as HTMLElement).dataset.index || '0', 10);
-        this.playTrack(index);
+        if ((e.target as HTMLElement).closest('.track-icon-btn, .track-play-btn')) return;
+        const idx = parseInt((row as HTMLElement).dataset.index || '0', 10);
+        this.playTrack(idx);
+        // On mobile, also open now-playing view
+        if (window.innerWidth < 768) this.openNowPlaying();
+      });
+
+      // Keyboard nav
+      row.addEventListener('keydown', (e) => {
+        if ((e as KeyboardEvent).key === 'Enter') (row as HTMLElement).click();
       });
     });
 
-    tbody.querySelectorAll('.btn-row-fav').forEach(btn => {
+    // Play buttons
+    container.querySelectorAll('.play-track-btn').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const id = (btn as HTMLElement).dataset.id!;
-        this.toggleFavorite(id);
+        const idx = parseInt((btn as HTMLElement).dataset.index || '0', 10);
+        if (this.currentTrack?.id === list[idx].id) {
+          this.togglePlay();
+        } else {
+          this.playTrack(idx);
+          if (window.innerWidth < 768) this.openNowPlaying();
+        }
       });
     });
 
-    tbody.querySelectorAll('.btn-row-del').forEach(btn => {
+    // Fav buttons
+    container.querySelectorAll('.fav-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleFav((btn as HTMLElement).dataset.id!);
+      });
+    });
+
+    // Delete buttons
+    container.querySelectorAll('.del-btn').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const id = (btn as HTMLElement).dataset.id!;
-        if (confirm('Are you sure you want to remove this track from your drive?')) {
+        if (confirm('Remove this track from your drive?')) {
           await this.deleteTrack(id);
         }
       });
@@ -962,175 +959,210 @@ class MusicPlayerApp {
     try {
       const res = await fetch(`${API_BASE}/api/tracks/${id}`, { method: 'DELETE' });
       if (res.ok) {
-        this.tracks = this.tracks.filter(t => t.id !== id);
+        this.tracks = this.tracks.filter((t) => t.id !== id);
         this.favorites.delete(id);
         if (this.currentTrack?.id === id) {
           this.audio.pause();
           this.currentTrack = null;
+          this.$('np-idle').style.display = '';
+          this.$('np-active').classList.remove('visible');
+          this.updateMiniPlayer();
         }
-        this.showToast('Track deleted from storage');
+        this.toast('Track removed');
         this.renderTrackList();
       } else {
-        this.showToast('Failed to delete track', 'error');
+        this.toast('Failed to delete track', 'error');
       }
-    } catch (e) {
-      this.showToast('Could not reach backend', 'error');
+    } catch {
+      this.toast('Could not reach backend', 'error');
     }
   }
 
-  // URL Audio Downloader Logic
-  private resetDownloaderModal() {
-    (document.getElementById('input-download-url') as HTMLInputElement).value = '';
-    (document.getElementById('input-custom-title') as HTMLInputElement).value = '';
-    (document.getElementById('input-custom-artist') as HTMLInputElement).value = '';
-    document.getElementById('download-preview-box')!.style.display = 'none';
-    document.getElementById('download-edit-fields')!.style.display = 'none';
-    document.getElementById('download-progress-status')!.style.display = 'none';
-    (document.getElementById('btn-confirm-download') as HTMLButtonElement).disabled = true;
-    (document.getElementById('btn-confirm-stream') as HTMLButtonElement).disabled = true;
+  // ──────────────────────────────────────────
+  // DOWNLOADER
+  // ──────────────────────────────────────────
+
+  private resetDlModal() {
+    this.$<HTMLInputElement>('url-input').value = '';
+    this.$<HTMLInputElement>('custom-title').value = '';
+    this.$<HTMLInputElement>('custom-artist').value = '';
+    this.$('preview-box').style.display = 'none';
+    this.$('edit-fields').style.display = 'none';
+    this.$('dl-status').style.display = 'none';
+    (this.$<HTMLButtonElement>('btn-download')).disabled = true;
   }
 
-  private async handleInspectUrl() {
-    const urlInput = document.getElementById('input-download-url') as HTMLInputElement;
-    const url = urlInput.value.trim();
+  private async handleInspect() {
+    const url = this.$<HTMLInputElement>('url-input').value.trim();
     if (!url) {
-      this.showToast('Please paste a media URL first', 'error');
+      this.toast('Paste a URL first', 'error');
       return;
     }
 
-    const inspectBtn = document.getElementById('btn-inspect-url')!;
-    inspectBtn.innerHTML = `<div class="spinner"></div>`;
-    
+    const btn = this.$('btn-inspect');
+    btn.innerHTML = `<div class="spinner"></div>`;
+
     try {
       const res = await fetch(`${API_BASE}/api/preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
+        body: JSON.stringify({ url }),
       });
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.detail || 'URL could not be parsed');
+        throw new Error(err.detail || 'Could not parse URL');
       }
 
       const info = await res.json();
-      
-      // Populate preview card
-      document.getElementById('download-preview-box')!.style.display = 'flex';
-      (document.getElementById('preview-thumb') as HTMLImageElement).src = info.thumbnail;
-      document.getElementById('preview-title')!.textContent = info.title;
-      document.getElementById('preview-artist')!.textContent = info.artist;
-      document.getElementById('preview-duration')!.textContent = this.formatTime(info.duration);
 
-      // Populate edit fields
-      document.getElementById('download-edit-fields')!.style.display = 'flex';
-      (document.getElementById('input-custom-title') as HTMLInputElement).value = info.title;
-      (document.getElementById('input-custom-artist') as HTMLInputElement).value = info.artist;
+      // Show preview
+      this.$('preview-box').style.display = 'flex';
+      this.$<HTMLImageElement>('preview-thumb').src = info.thumbnail;
+      this.$('pv-title').textContent = info.title;
+      this.$('pv-artist').textContent = info.artist;
+      this.$('pv-duration').textContent = this.fmt(info.duration);
 
-      (document.getElementById('btn-confirm-download') as HTMLButtonElement).disabled = false;
-      (document.getElementById('btn-confirm-stream') as HTMLButtonElement).disabled = false;
-      this.showToast('Media info fetched! Choose Stream or Download.');
+      // Show edit fields
+      this.$('edit-fields').style.display = 'flex';
+      this.$<HTMLInputElement>('custom-title').value = info.title;
+      this.$<HTMLInputElement>('custom-artist').value = info.artist;
+
+      (this.$<HTMLButtonElement>('btn-download')).disabled = false;
+      this.toast('Track info loaded! Edit if needed then download.');
     } catch (e: unknown) {
-      this.showToast((e as Error).message || 'Failed to inspect media URL', 'error');
+      this.toast((e as Error).message || 'Failed to inspect URL', 'error');
     } finally {
-      inspectBtn.innerHTML = `<span>Inspect</span>`;
+      btn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        Inspect
+      `;
     }
   }
 
-  private async handleStartDownload() {
-    const url = (document.getElementById('input-download-url') as HTMLInputElement).value.trim();
-    const custom_title = (document.getElementById('input-custom-title') as HTMLInputElement).value.trim();
-    const custom_artist = (document.getElementById('input-custom-artist') as HTMLInputElement).value.trim();
+  private async handleDownload() {
+    const url = this.$<HTMLInputElement>('url-input').value.trim();
+    const custom_title = this.$<HTMLInputElement>('custom-title').value.trim();
+    const custom_artist = this.$<HTMLInputElement>('custom-artist').value.trim();
 
-    const confirmBtn = document.getElementById('btn-confirm-download') as HTMLButtonElement;
-    const progressStatus = document.getElementById('download-progress-status')!;
-    const progressText = document.getElementById('download-progress-text')!;
+    const dlBtn = this.$<HTMLButtonElement>('btn-download');
+    const statusEl = this.$('dl-status');
+    const statusText = this.$('dl-status-text');
 
-    confirmBtn.disabled = true;
-    progressStatus.style.display = 'inline-flex';
-    progressText.textContent = 'Extracting audio & storing in drive...';
+    dlBtn.disabled = true;
+    statusEl.style.display = 'flex';
+    statusText.textContent = 'Downloading & extracting audio…';
 
     try {
       const res = await fetch(`${API_BASE}/api/extract`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, custom_title, custom_artist })
+        body: JSON.stringify({ url, custom_title, custom_artist }),
       });
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.detail || 'Audio download failed');
+        throw new Error(err.detail || 'Download failed');
       }
 
       const result = await res.json();
       const newTrack: Track = result.track;
 
-      // Add to top of list
       this.tracks.unshift(newTrack);
       this.renderTrackList();
 
-      document.getElementById('modal-downloader')!.classList.remove('active');
-      this.resetDownloaderModal();
-      this.showToast(`"${newTrack.title}" added to your drive!`);
+      this.$('modal-dl').classList.remove('active');
+      this.resetDlModal();
+      this.toast(`"${newTrack.title}" added to your library!`);
 
-      // Auto play newly added track
       this.playTrack(0);
+      if (window.innerWidth < 768) this.openNowPlaying();
     } catch (e: unknown) {
-      this.showToast((e as Error).message || 'Audio extraction failed', 'error');
-      confirmBtn.disabled = false;
-      progressStatus.style.display = 'none';
+      this.toast((e as Error).message || 'Audio extraction failed', 'error');
+      dlBtn.disabled = false;
+      statusEl.style.display = 'none';
     }
   }
 
-  private async handleStreamAndBookmark() {
-    const url = (document.getElementById('input-download-url') as HTMLInputElement).value.trim();
-    const custom_title = (document.getElementById('input-custom-title') as HTMLInputElement).value.trim();
-    const custom_artist = (document.getElementById('input-custom-artist') as HTMLInputElement).value.trim();
+  // ──────────────────────────────────────────
+  // SETTINGS
+  // ──────────────────────────────────────────
 
-    const streamBtn = document.getElementById('btn-confirm-stream') as HTMLButtonElement;
-    const progressStatus = document.getElementById('download-progress-status')!;
-    const progressText = document.getElementById('download-progress-text')!;
+  private async fetchConfig() {
+    try {
+      const res = await fetch(`${API_BASE}/api/config`);
+      if (res.ok) {
+        this.cloudConfig = await res.json();
+        this.populateSettingsForm();
+      }
+    } catch (_) {}
+  }
 
-    streamBtn.disabled = true;
-    progressStatus.style.display = 'inline-flex';
-    progressText.textContent = 'Saving stream & adding to Favorites...';
+  private populateSettingsForm() {
+    this.$<HTMLSelectElement>('provider-select').value = this.cloudConfig.provider;
+    this.$<HTMLInputElement>('supa-url').value = this.cloudConfig.supabase_url || '';
+    this.$<HTMLInputElement>('supa-key').value = this.cloudConfig.supabase_key || '';
+    this.$<HTMLInputElement>('supa-bucket').value = this.cloudConfig.supabase_bucket || 'music';
+    this.$('supa-fields').style.display =
+      this.cloudConfig.provider === 'supabase' ? 'flex' : 'none';
+  }
+
+  private async handleSaveSettings() {
+    const provider = this.$<HTMLSelectElement>('provider-select').value;
+    const supabase_url = this.$<HTMLInputElement>('supa-url').value.trim();
+    const supabase_key = this.$<HTMLInputElement>('supa-key').value.trim();
+    const supabase_bucket = this.$<HTMLInputElement>('supa-bucket').value.trim();
+
+    const cfg: CloudConfig = { provider, supabase_url, supabase_key, supabase_bucket };
 
     try {
-      const res = await fetch(`${API_BASE}/api/bookmark`, {
+      const res = await fetch(`${API_BASE}/api/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, custom_title, custom_artist })
+        body: JSON.stringify(cfg),
       });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Failed to bookmark stream');
+      if (res.ok) {
+        this.cloudConfig = cfg;
+        this.$('modal-settings').classList.remove('active');
+        this.toast('Storage settings saved!');
+      } else {
+        this.toast('Failed to save settings', 'error');
       }
+    } catch {
+      this.toast('Could not reach backend', 'error');
+    }
+  }
 
-      const result = await res.json();
-      const newTrack: Track = result.track;
+  // ──────────────────────────────────────────
+  // FETCH TRACKS
+  // ──────────────────────────────────────────
 
-      // Add to tracks list
-      this.tracks.unshift(newTrack);
+  private async fetchTracks() {
+    try {
+      const res = await fetch(`${API_BASE}/api/tracks`);
+      if (res.ok) {
+        const data = await res.json();
+        // Filter out stream-only tracks (no longer supported)
+        this.tracks = (data.tracks || []).filter(
+          (t: Track) => !t.is_stream && !t.id.startsWith('stream-')
+        );
+        this.renderTrackList();
 
-      // Automatically add to Favorites so it's always ready to replay
-      this.favorites.add(newTrack.id);
-      localStorage.setItem('soundvault_favs', JSON.stringify(Array.from(this.favorites)));
-
-      this.renderTrackList();
-      document.getElementById('modal-downloader')!.classList.remove('active');
-      this.resetDownloaderModal();
-      this.showToast(`⚡ "${newTrack.title}" saved to Favorites! (0 Storage Used)`);
-
-      // Auto play instantly
-      this.playTrack(0);
-    } catch (e: unknown) {
-      this.showToast((e as Error).message || 'Failed to stream audio', 'error');
-      streamBtn.disabled = false;
-      progressStatus.style.display = 'none';
+        // Pre-load first track info into now playing
+        if (this.tracks.length > 0 && !this.currentTrack) {
+          const first = this.tracks[0];
+          this.$('np-title').textContent = first.title;
+          this.$('np-artist').textContent = first.artist;
+          this.$('total-time').textContent = this.fmt(first.duration);
+        }
+      }
+    } catch (_) {
+      // Backend not yet reachable — will retry on user action
     }
   }
 }
 
-// Initialize Application
+// ── Boot ──
 new MusicPlayerApp();
