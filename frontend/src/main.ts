@@ -1,4 +1,23 @@
 import './style.css';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+
+interface MusicNotificationPluginType {
+  update(options: {
+    title: string;
+    artist: string;
+    isPlaying: boolean;
+    thumbnailUrl?: string;
+  }): Promise<void>;
+  clear(): Promise<void>;
+  checkPermissions(): Promise<{ notifications: string }>;
+  requestPermissions(options: { permissions: string[] }): Promise<{ notifications: string }>;
+  addListener(
+    eventName: 'musicControlsAction',
+    listenerFunc: (data: { action: 'play' | 'pause' | 'next' | 'previous' }) => void
+  ): Promise<any>;
+}
+
+const MusicNotification = registerPlugin<MusicNotificationPluginType>('MusicNotification');
 
 interface Track {
   id: string;
@@ -61,6 +80,7 @@ class MusicPlayerApp {
     this.attachListeners();
     this.initAudioEvents();
     this.initKeyboard();
+    this.initNativeMusicControls();
     this.fetchConfig();
     this.fetchTracks();
   }
@@ -70,6 +90,11 @@ class MusicPlayerApp {
   // ──────────────────────────────────────────
 
   private resolveAudioUrl(url: string): string {
+    return url.startsWith('/storage') ? `${API_BASE}${url}` : url;
+  }
+
+  private resolveMediaUrl(url: string): string {
+    if (!url) return '';
     return url.startsWith('/storage') ? `${API_BASE}${url}` : url;
   }
 
@@ -537,6 +562,7 @@ class MusicPlayerApp {
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing';
       }
+      this.syncNativeMusicNotification();
     });
 
     this.audio.addEventListener('pause', () => {
@@ -546,6 +572,7 @@ class MusicPlayerApp {
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'paused';
       }
+      this.syncNativeMusicNotification();
     });
 
     this.audio.addEventListener('error', (e) => {
@@ -680,6 +707,7 @@ class MusicPlayerApp {
   // ──────────────────────────────────────────
 
   private updateMediaSession() {
+    this.syncNativeMusicNotification();
     if (!('mediaSession' in navigator) || !this.currentTrack) return;
     const t = this.currentTrack;
     try {
@@ -687,7 +715,7 @@ class MusicPlayerApp {
         title: t.title,
         artist: t.artist,
         album: 'poori',
-        artwork: t.thumbnail ? [{ src: t.thumbnail, sizes: '512x512', type: 'image/jpeg' }] : [{ src: '/logo.png', sizes: '512x512', type: 'image/png' }],
+        artwork: t.thumbnail ? [{ src: this.resolveMediaUrl(t.thumbnail), sizes: '512x512', type: 'image/jpeg' }] : [{ src: '/logo.png', sizes: '512x512', type: 'image/png' }],
       });
 
       navigator.mediaSession.setActionHandler('play', () => this.togglePlay());
@@ -699,6 +727,54 @@ class MusicPlayerApp {
           this.audio.currentTime = details.seekTime;
         }
       });
+    } catch (_) {}
+  }
+
+  private initNativeMusicControls() {
+    if (!Capacitor.isNativePlatform()) return;
+
+    try {
+      MusicNotification.checkPermissions().then((status) => {
+        if (status.notifications !== 'granted') {
+          MusicNotification.requestPermissions({ permissions: ['notifications'] }).catch(() => {});
+        }
+      }).catch(() => {});
+    } catch (_) {}
+
+    try {
+      MusicNotification.addListener('musicControlsAction', (data) => {
+        if (!data || !data.action) return;
+        switch (data.action) {
+          case 'play':
+            if (!this.isPlaying) this.togglePlay();
+            break;
+          case 'pause':
+            if (this.isPlaying) this.togglePlay();
+            break;
+          case 'next':
+            this.nextTrack();
+            break;
+          case 'previous':
+            this.prevTrack();
+            break;
+        }
+      });
+    } catch (_) {}
+  }
+
+  private syncNativeMusicNotification() {
+    if (!Capacitor.isNativePlatform() || !this.currentTrack) return;
+    try {
+      const thumb = this.currentTrack.thumbnail
+        ? this.resolveMediaUrl(this.currentTrack.thumbnail)
+        : '';
+
+      MusicNotification.update({
+        title: this.currentTrack.title || 'Unknown Track',
+        artist: this.currentTrack.artist || 'poori',
+        isPlaying: this.isPlaying,
+        thumbnailUrl: thumb,
+      }).catch((e) => console.warn('MusicNotification update failed:', e));
     } catch (_) {}
   }
 
@@ -1043,6 +1119,9 @@ class MusicPlayerApp {
           this.$('np-idle').style.display = '';
           this.$('np-active').classList.remove('visible');
           this.updateMiniPlayer();
+          if (Capacitor.isNativePlatform()) {
+            MusicNotification.clear().catch(() => {});
+          }
         }
         this.toast('Track removed');
         this.renderTrackList();
