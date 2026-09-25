@@ -23,3 +23,22 @@ backend/.env
 *cookies.txt
 backend/storage/cookies.txt
 .agents/
+
+# Android & Mobile Releases / Keystores
+release/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Android build outputs & local config
+frontend/android/.gradle/
+frontend/android/build/
+frontend/android/app/build/
+frontend/android/local.properties
+frontend/android/.idea/
+frontend/android/*.iml
+frontend/android/captures/
+frontend/android/.externalNativeBuild/
+frontend/android/.cxx/
+frontend/android/capacitor-cordova-android-plugins/

@@ -1,0 +1,16 @@
+{
+  "appId": "com.soundvault.app",
+  "appName": "poori",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "allowNavigation": [
+      "https://cloud-music-player-wzd5.onrender.com",
+      "https://kgtlhjwsheiholowfebj.supabase.co"
+    ]
+  },
+  "android": {
+    "backgroundColor": "#0A0A0A",
+    "allowMixedContent": true
+  }
+}

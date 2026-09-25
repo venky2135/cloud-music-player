@@ -21,7 +21,9 @@ interface CloudConfig {
   youtube_cookies?: string;
 }
 
-const API_BASE = window.location.port === '5173' ? 'http://127.0.0.1:8000' : '';
+const RENDER_BACKEND = 'https://cloud-music-player-wzd5.onrender.com';
+// In dev (port 5173) → local backend. In Capacitor native app or prod → Render backend.
+const API_BASE = window.location.port === '5173' ? 'http://127.0.0.1:8000' : RENDER_BACKEND;
 
 class MusicPlayerApp {
   private tracks: Track[] = [];
@@ -684,8 +686,8 @@ class MusicPlayerApp {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: t.title,
         artist: t.artist,
-        album: 'SoundVault',
-        artwork: t.thumbnail ? [{ src: t.thumbnail, sizes: '512x512', type: 'image/jpeg' }] : [],
+        album: 'poori',
+        artwork: t.thumbnail ? [{ src: t.thumbnail, sizes: '512x512', type: 'image/jpeg' }] : [{ src: '/logo.png', sizes: '512x512', type: 'image/png' }],
       });
 
       navigator.mediaSession.setActionHandler('play', () => this.togglePlay());
