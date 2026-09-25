@@ -46,12 +46,13 @@ class MusicPlayerApp {
 
   // Audio engine
   private audio: HTMLAudioElement;
-  private audioCtx: AudioContext | null = null;
-  private analyser: AnalyserNode | null = null;
+  private isAutoAdvancing = false;
 
   constructor() {
     this.audio = new Audio();
-    this.audio.crossOrigin = 'anonymous';
+    this.audio.preload = 'auto';
+    this.audio.setAttribute('playsinline', 'true');
+    this.audio.setAttribute('webkit-playsinline', 'true');
     this.audio.volume = this.volume;
 
     this.renderShell();
@@ -356,20 +357,13 @@ class MusicPlayerApp {
           </div>
 
           <div class="modal-body">
-            <div class="form-group">
-              <label class="form-label" for="provider-select">Storage Provider</label>
-              <select id="provider-select" class="form-input">
-                <option value="local">Local Storage (fastest, zero setup)</option>
-                <option value="supabase">Supabase Cloud (free 1 GB CDN)</option>
-              </select>
-            </div>
-            <div id="supa-fields" style="display:none;flex-direction:column;gap:12px;">
+            <div id="supa-fields" style="display:flex;flex-direction:column;gap:12px;">
               <div class="form-group">
-                <label class="form-label" for="supa-url">Project URL</label>
+                <label class="form-label" for="supa-url">Supabase Project URL</label>
                 <input type="text" id="supa-url" class="form-input" placeholder="https://your-project.supabase.co" />
               </div>
               <div class="form-group">
-                <label class="form-label" for="supa-key">API Key (anon or service role)</label>
+                <label class="form-label" for="supa-key">Supabase API Key (anon or service role)</label>
                 <input type="password" id="supa-key" class="form-input" placeholder="eyJhbGci…" />
               </div>
               <div class="form-group">
@@ -449,11 +443,6 @@ class MusicPlayerApp {
       if (e.target === this.$('modal-settings')) closeSettings();
     });
 
-    const providerSelect = this.$<HTMLSelectElement>('provider-select');
-    providerSelect.addEventListener('change', () => {
-      this.$('supa-fields').style.display =
-        providerSelect.value === 'supabase' ? 'flex' : 'none';
-    });
     this.$('btn-save-settings').addEventListener('click', () => this.handleSaveSettings());
 
     // ── Now playing mobile navigation ──
@@ -527,34 +516,64 @@ class MusicPlayerApp {
       this.$('total-time').textContent = this.fmt(tot);
       const pct = tot > 0 ? (cur / tot) * 100 : 0;
       this.$('seek-fill').style.width = `${Math.min(pct, 100)}%`;
+
+      // Mobile & streaming safeguard: if within 0.35s of track completion and stream finishes without firing 'ended'
+      if (tot > 0 && cur >= tot - 0.35 && !this.isAutoAdvancing) {
+        this.handleTrackEnded();
+      }
     });
 
     this.audio.addEventListener('ended', () => {
-      if (this.repeatMode === 'one') {
-        this.audio.currentTime = 0;
-        this.audio.play();
-      } else {
-        this.nextTrack();
-      }
+      this.handleTrackEnded();
     });
 
     this.audio.addEventListener('play', () => {
       this.isPlaying = true;
+      this.isAutoAdvancing = false;
       this.updatePlayUI();
       this.$('artwork-img').classList.add('spinning');
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'playing';
+      }
     });
 
     this.audio.addEventListener('pause', () => {
       this.isPlaying = false;
       this.updatePlayUI();
       this.$('artwork-img').classList.remove('spinning');
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'paused';
+      }
     });
 
-    this.audio.addEventListener('error', () => {
-      this.toast('Error playing audio', 'error');
+    this.audio.addEventListener('error', (e) => {
+      console.warn('Audio playback error:', e);
       this.isPlaying = false;
       this.updatePlayUI();
+
+      // On mobile or stream error, automatically skip to next track so playlist does not freeze
+      if (!this.isAutoAdvancing && this.tracks.length > 1) {
+        this.toast('Error playing track, skipping to next…', 'error');
+        this.isAutoAdvancing = true;
+        setTimeout(() => {
+          this.nextTrack(true);
+        }, 1200);
+      }
     });
+  }
+
+  private handleTrackEnded() {
+    if (this.isAutoAdvancing) return;
+    this.isAutoAdvancing = true;
+
+    if (this.repeatMode === 'one') {
+      this.audio.currentTime = 0;
+      const p = this.audio.play();
+      if (p !== undefined) p.catch(() => {});
+      this.isAutoAdvancing = false;
+    } else {
+      this.nextTrack(true);
+    }
   }
 
   // ──────────────────────────────────────────
@@ -658,32 +677,60 @@ class MusicPlayerApp {
   // PLAYBACK
   // ──────────────────────────────────────────
 
+  private updateMediaSession() {
+    if (!('mediaSession' in navigator) || !this.currentTrack) return;
+    const t = this.currentTrack;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: t.title,
+        artist: t.artist,
+        album: 'SoundVault',
+        artwork: t.thumbnail ? [{ src: t.thumbnail, sizes: '512x512', type: 'image/jpeg' }] : [],
+      });
+
+      navigator.mediaSession.setActionHandler('play', () => this.togglePlay());
+      navigator.mediaSession.setActionHandler('pause', () => this.togglePlay());
+      navigator.mediaSession.setActionHandler('previoustrack', () => this.prevTrack());
+      navigator.mediaSession.setActionHandler('nexttrack', () => this.nextTrack());
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (details.seekTime !== undefined && details.seekTime !== null && this.audio.duration) {
+          this.audio.currentTime = details.seekTime;
+        }
+      });
+    } catch (_) {}
+  }
+
   private playTrack(index: number) {
     const list = this.getFiltered();
-    if (index < 0 || index >= list.length) return;
-
-    this.currentTrack = list[index];
-    this.audio.src = this.resolveAudioUrl(this.currentTrack.audio_url);
-    this.audio.load();
-
-    // Setup audio context lazily on user gesture
-    if (!this.audioCtx) {
-      try {
-        const Ctx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext })
-            .webkitAudioContext;
-        this.audioCtx = new Ctx();
-        this.analyser = this.audioCtx.createAnalyser();
-        const src = this.audioCtx.createMediaElementSource(this.audio);
-        src.connect(this.analyser);
-        this.analyser.connect(this.audioCtx.destination);
-      } catch (_) {}
+    if (index < 0 || index >= list.length) {
+      this.isAutoAdvancing = false;
+      return;
     }
 
-    if (this.audioCtx?.state === 'suspended') this.audioCtx.resume();
-    this.audio.play().catch(() => {});
+    this.isAutoAdvancing = false;
+    this.currentTrack = list[index];
+    const url = this.resolveAudioUrl(this.currentTrack.audio_url);
 
+    // CRITICAL FIX FOR MOBILE:
+    // DO NOT call this.audio.load()! On iOS and Android, calling load()
+    // removes the mobile user-activation token and breaks auto-play of the next track.
+    // Assigning .src directly preserves playback authorization on the existing Audio element.
+    this.audio.src = url;
+
+    const playPromise = this.audio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((err) => {
+        console.warn('Auto-play initial attempt deferred:', err);
+        // If audio is buffering on mobile, trigger play as soon as canplay fires
+        const onCanPlay = () => {
+          this.audio.removeEventListener('canplay', onCanPlay);
+          this.audio.play().catch((e) => console.warn('Retry play error:', e));
+        };
+        this.audio.addEventListener('canplay', onCanPlay, { once: true });
+      });
+    }
+
+    this.updateMediaSession();
     this.updateNowPlayingUI();
     this.updateMiniPlayer();
     this.renderTrackList();
@@ -697,19 +744,37 @@ class MusicPlayerApp {
     if (this.isPlaying) {
       this.audio.pause();
     } else {
-      if (this.audioCtx?.state === 'suspended') this.audioCtx.resume();
-      this.audio.play().catch(() => {});
+      const p = this.audio.play();
+      if (p !== undefined) p.catch(() => {});
     }
   }
 
-  private nextTrack() {
+  private nextTrack(isAuto = false) {
     const list = this.getFiltered();
-    if (list.length === 0) return;
-    if (this.isShuffle) {
-      this.playTrack(Math.floor(Math.random() * list.length));
+    if (list.length === 0) {
+      this.isAutoAdvancing = false;
       return;
     }
+
     const cur = list.findIndex((t) => t.id === this.currentTrack?.id);
+
+    // If auto-advancing at end of playlist and repeat is off, stop
+    if (isAuto && this.repeatMode === 'off' && cur === list.length - 1) {
+      this.isAutoAdvancing = false;
+      this.isPlaying = false;
+      this.audio.pause();
+      this.audio.currentTime = 0;
+      this.updatePlayUI();
+      return;
+    }
+
+    if (this.isShuffle) {
+      const remaining = list.length > 1 ? list.filter((_, idx) => idx !== cur) : list;
+      const nextIndex = list.indexOf(remaining[Math.floor(Math.random() * remaining.length)]);
+      this.playTrack(nextIndex >= 0 ? nextIndex : 0);
+      return;
+    }
+
     this.playTrack((cur + 1) % list.length);
   }
 
@@ -1110,17 +1175,14 @@ class MusicPlayerApp {
   }
 
   private populateSettingsForm() {
-    this.$<HTMLSelectElement>('provider-select').value = this.cloudConfig.provider;
     this.$<HTMLInputElement>('supa-url').value = this.cloudConfig.supabase_url || '';
     this.$<HTMLInputElement>('supa-key').value = this.cloudConfig.supabase_key || '';
     this.$<HTMLInputElement>('supa-bucket').value = this.cloudConfig.supabase_bucket || 'music';
     this.$<HTMLTextAreaElement>('yt-cookies').value = this.cloudConfig.youtube_cookies || '';
-    this.$('supa-fields').style.display =
-      this.cloudConfig.provider === 'supabase' ? 'flex' : 'none';
   }
 
   private async handleSaveSettings() {
-    const provider = this.$<HTMLSelectElement>('provider-select').value;
+    const provider = 'supabase';
     const supabase_url = this.$<HTMLInputElement>('supa-url').value.trim();
     const supabase_key = this.$<HTMLInputElement>('supa-key').value.trim();
     const supabase_bucket = this.$<HTMLInputElement>('supa-bucket').value.trim();

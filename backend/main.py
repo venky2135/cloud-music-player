@@ -69,13 +69,6 @@ def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
     cookie_path = get_cookie_file_path()
     if cookie_path:
         opts["cookiefile"] = cookie_path
-    else:
-        # Fallback to mobile player clients when no cookies are supplied
-        opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["android", "ios", "mweb", "web"]
-            }
-        }
 
     if extra_opts:
         for k, v in extra_opts.items():
@@ -543,9 +536,10 @@ def extract_and_download(req: ExtractRequest):
             raise HTTPException(status_code=400, detail=f"Failed to download direct audio: {str(e)}")
 
     else:
-        # yt-dlp audio download with mobile player client
+        # yt-dlp audio download prioritizing YouTube's highest bitrate pure audio streams (Opus 160kbps / AAC 130kbps)
         ydl_opts = get_ydl_opts({
-            "format": "bestaudio/best",
+            "format": "bestaudio[abr>0]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+            "format_sort": ["abr", "quality", "hasaud"],
             "outtmpl": str(AUDIO_DIR / f"{track_id}.%(ext)s"),
         })
 
