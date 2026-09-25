@@ -78,11 +78,15 @@ public class MediaNotificationService extends Service {
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPlay() {
+                currentIsPlaying = true;
+                buildAndPostNotification(cachedArtwork);
                 MusicNotificationPlugin.notifyAction("play");
             }
 
             @Override
             public void onPause() {
+                currentIsPlaying = false;
+                buildAndPostNotification(cachedArtwork);
                 MusicNotificationPlugin.notifyAction("pause");
             }
 
@@ -153,10 +157,14 @@ public class MediaNotificationService extends Service {
                 break;
 
             case ACTION_PLAY:
+                currentIsPlaying = true;
+                buildAndPostNotification(cachedArtwork);
                 MusicNotificationPlugin.notifyAction("play");
                 break;
 
             case ACTION_PAUSE:
+                currentIsPlaying = false;
+                buildAndPostNotification(cachedArtwork);
                 MusicNotificationPlugin.notifyAction("pause");
                 break;
 
@@ -297,11 +305,6 @@ public class MediaNotificationService extends Service {
             } else {
                 startForeground(NOTIFICATION_ID, notification);
             }
-
-            if (!currentIsPlaying) {
-                // Allows dismissing if paused
-                stopForeground(false);
-            }
         } catch (Exception e) {
             NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager != null) {
@@ -313,12 +316,21 @@ public class MediaNotificationService extends Service {
     private PendingIntent getServicePendingIntent(String action, int requestCode) {
         Intent intent = new Intent(this, MediaNotificationService.class);
         intent.setAction(action);
-        return PendingIntent.getService(
-                this,
-                requestCode,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return PendingIntent.getForegroundService(
+                    this,
+                    requestCode,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+            );
+        } else {
+            return PendingIntent.getService(
+                    this,
+                    requestCode,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+            );
+        }
     }
 
     private void stopNotification() {

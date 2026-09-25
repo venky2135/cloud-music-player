@@ -874,8 +874,8 @@ class MusicPlayerApp {
         artwork: t.thumbnail ? [{ src: this.resolveMediaUrl(t.thumbnail), sizes: '512x512', type: 'image/jpeg' }] : [{ src: '/logo.png', sizes: '512x512', type: 'image/png' }],
       });
 
-      navigator.mediaSession.setActionHandler('play', () => this.togglePlay());
-      navigator.mediaSession.setActionHandler('pause', () => this.togglePlay());
+      navigator.mediaSession.setActionHandler('play', () => this.resumeAudio());
+      navigator.mediaSession.setActionHandler('pause', () => this.pauseAudio());
       navigator.mediaSession.setActionHandler('previoustrack', () => this.prevTrack());
       navigator.mediaSession.setActionHandler('nexttrack', () => this.nextTrack());
       navigator.mediaSession.setActionHandler('seekto', (details) => {
@@ -902,10 +902,10 @@ class MusicPlayerApp {
         if (!data || !data.action) return;
         switch (data.action) {
           case 'play':
-            if (!this.isPlaying) this.togglePlay();
+            this.resumeAudio();
             break;
           case 'pause':
-            if (this.isPlaying) this.togglePlay();
+            this.pauseAudio();
             break;
           case 'next':
             this.nextTrack();
@@ -999,16 +999,39 @@ class MusicPlayerApp {
     this.renderTrackList();
   }
 
+  private resumeAudio() {
+    if (!this.currentTrack) {
+      if (this.tracks.length > 0) this.playTrack(0);
+      return;
+    }
+    const playPromise = this.audio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((err) => {
+        console.warn('Audio play failed, attempting recovery:', err);
+        if (this.currentTrack) {
+          const curTime = this.audio.currentTime || 0;
+          const url = this.resolveAudioUrl(this.currentTrack.audio_url);
+          this.audio.src = url;
+          this.audio.currentTime = curTime;
+          this.audio.play().catch((e) => console.warn('Recovery play failed:', e));
+        }
+      });
+    }
+  }
+
+  private pauseAudio() {
+    this.audio.pause();
+  }
+
   private togglePlay() {
     if (!this.currentTrack) {
       if (this.tracks.length > 0) this.playTrack(0);
       return;
     }
-    if (this.isPlaying) {
-      this.audio.pause();
+    if (this.audio.paused) {
+      this.resumeAudio();
     } else {
-      const p = this.audio.play();
-      if (p !== undefined) p.catch(() => { });
+      this.pauseAudio();
     }
   }
 
