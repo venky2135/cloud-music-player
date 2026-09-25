@@ -28,4 +28,22 @@ CREATE POLICY "Allow all for SoundVault" ON public.tracks
     USING (true)
     WITH CHECK (true);
 
--- Done! Your Supabase database is now configured to store track metadata.
+-- 4. Create the playlists table
+CREATE TABLE IF NOT EXISTS public.playlists (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    track_ids TEXT[] DEFAULT '{}',
+    created_at DOUBLE PRECISION DEFAULT EXTRACT(EPOCH FROM NOW())
+);
+
+-- 5. Enable Row Level Security (RLS) for playlists
+ALTER TABLE public.playlists ENABLE ROW LEVEL SECURITY;
+
+-- 6. Create permissive access policy for playlists
+DROP POLICY IF EXISTS "Allow all for playlists" ON public.playlists;
+CREATE POLICY "Allow all for playlists" ON public.playlists
+    FOR ALL
+    USING (true)
+    WITH CHECK (true);
+
+-- Done! Your Supabase database is now configured to store track and playlist metadata.

@@ -12,6 +12,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
@@ -27,6 +28,7 @@ import java.util.concurrent.Executors;
 
 public class MediaNotificationService extends Service {
     public static final String ACTION_UPDATE = "com.soundvault.app.ACTION_UPDATE";
+    public static final String ACTION_SET_POSITION = "com.soundvault.app.ACTION_SET_POSITION";
     public static final String ACTION_PLAY = "com.soundvault.app.ACTION_PLAY";
     public static final String ACTION_PAUSE = "com.soundvault.app.ACTION_PAUSE";
     public static final String ACTION_PREV = "com.soundvault.app.ACTION_PREV";
@@ -42,6 +44,8 @@ public class MediaNotificationService extends Service {
     private String currentArtist = "";
     private String currentThumbnailUrl = "";
     private boolean currentIsPlaying = false;
+    private long currentDurationMs = 0;
+    private long currentPositionMs = 0;
     private Bitmap cachedArtwork = null;
 
     @Override
@@ -93,6 +97,13 @@ public class MediaNotificationService extends Service {
             }
 
             @Override
+            public void onSeekTo(long pos) {
+                currentPositionMs = pos;
+                updatePlaybackStateOnly();
+                MusicNotificationPlugin.notifySeek(pos);
+            }
+
+            @Override
             public void onStop() {
                 MusicNotificationPlugin.notifyAction("pause");
                 stopNotification();
@@ -115,10 +126,16 @@ public class MediaNotificationService extends Service {
                 String artist = intent.getStringExtra("artist");
                 boolean isPlaying = intent.getBooleanExtra("isPlaying", false);
                 String thumbnailUrl = intent.getStringExtra("thumbnailUrl");
+                long durationMs = intent.getLongExtra("durationMs", 0);
+                long positionMs = intent.getLongExtra("positionMs", 0);
 
                 currentTitle = (title != null && !title.isEmpty()) ? title : "Unknown Track";
                 currentArtist = (artist != null && !artist.isEmpty()) ? artist : "poori";
                 currentIsPlaying = isPlaying;
+                if (durationMs > 0) {
+                    currentDurationMs = durationMs;
+                }
+                currentPositionMs = positionMs;
 
                 if (thumbnailUrl != null && !thumbnailUrl.equals(currentThumbnailUrl)) {
                     currentThumbnailUrl = thumbnailUrl;
@@ -127,6 +144,12 @@ public class MediaNotificationService extends Service {
                 } else {
                     buildAndPostNotification(cachedArtwork);
                 }
+                break;
+
+            case ACTION_SET_POSITION:
+                currentPositionMs = intent.getLongExtra("positionMs", currentPositionMs);
+                currentIsPlaying = intent.getBooleanExtra("isPlaying", currentIsPlaying);
+                updatePlaybackStateOnly();
                 break;
 
             case ACTION_PLAY:
@@ -187,27 +210,42 @@ public class MediaNotificationService extends Service {
         buildAndPostNotification(cachedArtwork);
     }
 
-    private void buildAndPostNotification(@Nullable Bitmap artwork) {
+    private void updatePlaybackStateOnly() {
         if (mediaSession == null) return;
 
-        // Update MediaSession state
         long actions = PlaybackStateCompat.ACTION_PLAY |
                 PlaybackStateCompat.ACTION_PAUSE |
                 PlaybackStateCompat.ACTION_PLAY_PAUSE |
                 PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
                 PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
+                PlaybackStateCompat.ACTION_SEEK_TO |
                 PlaybackStateCompat.ACTION_STOP;
 
         int state = currentIsPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+        float playbackSpeed = currentIsPlaying ? 1.0f : 0.0f;
+
         PlaybackStateCompat playbackState = new PlaybackStateCompat.Builder()
                 .setActions(actions)
-                .setState(state, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                .setState(state, currentPositionMs, playbackSpeed, SystemClock.elapsedRealtime())
                 .build();
         mediaSession.setPlaybackState(playbackState);
+    }
+
+    private void buildAndPostNotification(@Nullable Bitmap artwork) {
+        if (mediaSession == null) return;
+
+        // Update MediaSession state with valid position & speed so Android System UI animates seek bar
+        updatePlaybackStateOnly();
 
         MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
                 .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
                 .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist);
+
+        // Required for Android Media Notification to show the seekbar
+        if (currentDurationMs > 0) {
+            metaBuilder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs);
+        }
+
         if (artwork != null) {
             metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork);
         }

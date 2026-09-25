@@ -25,6 +25,7 @@ STORAGE_DIR = BASE_DIR / "storage"
 AUDIO_DIR = STORAGE_DIR / "audio"
 THUMB_DIR = STORAGE_DIR / "thumbnails"
 METADATA_FILE = STORAGE_DIR / "tracks.json"
+PLAYLISTS_FILE = STORAGE_DIR / "playlists.json"
 CONFIG_FILE = STORAGE_DIR / "config.json"
 COOKIES_FILE = STORAGE_DIR / "cookies.txt"
 
@@ -146,6 +147,17 @@ class StorageConfig(BaseModel):
     supabase_key: Optional[str] = ""
     supabase_bucket: Optional[str] = "music"
     youtube_cookies: Optional[str] = ""
+
+class PlaylistCreate(BaseModel):
+    name: str
+    track_ids: Optional[List[str]] = []
+
+class PlaylistUpdate(BaseModel):
+    name: Optional[str] = None
+    track_ids: Optional[List[str]] = None
+
+class PlaylistAddTrack(BaseModel):
+    track_id: str
 
 def get_supabase_headers(cfg: dict) -> dict:
     key = cfg.get("supabase_key", "")
@@ -314,6 +326,79 @@ def save_tracks(tracks: List[dict]):
     if cfg.get("provider") == "supabase" and cfg.get("supabase_url") and cfg.get("supabase_key"):
         save_supabase_tracks_backup(tracks, cfg)
 
+def load_local_playlists() -> List[dict]:
+    if PLAYLISTS_FILE.exists():
+        try:
+            with open(PLAYLISTS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_local_playlists(playlists: List[dict]):
+    with open(PLAYLISTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(playlists, f, indent=2)
+
+def fetch_supabase_playlists(cfg: dict) -> Optional[List[dict]]:
+    supa_url = (cfg.get("supabase_url") or "").rstrip("/")
+    if not supa_url or not cfg.get("supabase_key"):
+        return None
+    headers = get_supabase_headers(cfg)
+    try:
+        r = requests.get(f"{supa_url}/rest/v1/playlists?select=*&order=created_at.asc", headers=headers, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print("Supabase DB query playlists error:", e)
+
+    try:
+        bucket = cfg.get("supabase_bucket", "music")
+        cache_buster = int(time.time())
+        r = requests.get(
+            f"{supa_url}/storage/v1/object/public/{bucket}/metadata/playlists.json?t={cache_buster}",
+            headers={"Cache-Control": "no-cache"},
+            timeout=5
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list):
+                return data
+    except Exception as e:
+        print("Supabase storage playlists fetch error:", e)
+    return None
+
+def save_supabase_playlists_backup(playlists: List[dict], cfg: dict):
+    supa_url = (cfg.get("supabase_url") or "").rstrip("/")
+    if not supa_url or not cfg.get("supabase_key"):
+        return
+    headers = get_supabase_headers(cfg)
+    bucket = cfg.get("supabase_bucket", "music")
+    try:
+        data = json.dumps(playlists).encode("utf-8")
+        requests.post(
+            f"{supa_url}/storage/v1/object/{bucket}/metadata/playlists.json",
+            headers={**headers, "x-upsert": "true"},
+            data=data,
+            timeout=8
+        )
+    except Exception as e:
+        print("Supabase storage playlists backup error:", e)
+
+def load_playlists() -> List[dict]:
+    cfg = load_config()
+    if cfg.get("provider") == "supabase" and cfg.get("supabase_url") and cfg.get("supabase_key"):
+        cloud_pl = fetch_supabase_playlists(cfg)
+        if cloud_pl is not None:
+            save_local_playlists(cloud_pl)
+            return cloud_pl
+    return load_local_playlists()
+
+def save_playlists(playlists: List[dict]):
+    save_local_playlists(playlists)
+    cfg = load_config()
+    if cfg.get("provider") == "supabase" and cfg.get("supabase_url") and cfg.get("supabase_key"):
+        save_supabase_playlists_backup(playlists, cfg)
+
 def load_config() -> dict:
     cfg = {
         "provider": os.getenv("STORAGE_PROVIDER", "local"),
@@ -441,7 +526,97 @@ def delete_track(track_id: str):
             except Exception as e:
                 print(f"Could not delete {local_path}: {e}")
 
+    # Remove track from any playlists referencing it
+    try:
+        playlists = load_playlists()
+        pl_modified = False
+        for pl in playlists:
+            if track_id in pl.get("track_ids", []):
+                pl["track_ids"] = [tid for tid in pl["track_ids"] if tid != track_id]
+                pl_modified = True
+        if pl_modified:
+            save_playlists(playlists)
+    except Exception as e:
+        print("Failed to clean up track from playlists:", e)
+
     return {"message": "Track deleted successfully", "id": track_id}
+
+@app.get("/api/playlists")
+def get_playlists():
+    return {"playlists": load_playlists()}
+
+@app.post("/api/playlists")
+def create_playlist(req: PlaylistCreate):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Playlist name cannot be empty")
+    playlists = load_playlists()
+    new_pl = {
+        "id": f"pl_{uuid.uuid4().hex[:8]}",
+        "name": name,
+        "track_ids": req.track_ids or [],
+        "created_at": time.time()
+    }
+    playlists.append(new_pl)
+    save_playlists(playlists)
+    return {"playlist": new_pl}
+
+@app.put("/api/playlists/{playlist_id}")
+def update_playlist(playlist_id: str, req: PlaylistUpdate):
+    playlists = load_playlists()
+    found = None
+    for pl in playlists:
+        if pl["id"] == playlist_id:
+            found = pl
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    if req.name is not None:
+        trimmed = req.name.strip()
+        if trimmed:
+            found["name"] = trimmed
+    if req.track_ids is not None:
+        found["track_ids"] = req.track_ids
+    save_playlists(playlists)
+    return {"playlist": found}
+
+@app.delete("/api/playlists/{playlist_id}")
+def delete_playlist(playlist_id: str):
+    playlists = load_playlists()
+    new_pls = [p for p in playlists if p["id"] != playlist_id]
+    if len(new_pls) == len(playlists):
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    save_playlists(new_pls)
+    return {"message": "Playlist deleted successfully", "id": playlist_id}
+
+@app.post("/api/playlists/{playlist_id}/tracks")
+def add_track_to_playlist(playlist_id: str, req: PlaylistAddTrack):
+    playlists = load_playlists()
+    found = None
+    for pl in playlists:
+        if pl["id"] == playlist_id:
+            found = pl
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    if req.track_id not in found["track_ids"]:
+        found["track_ids"].append(req.track_id)
+        save_playlists(playlists)
+    return {"playlist": found}
+
+@app.delete("/api/playlists/{playlist_id}/tracks/{track_id}")
+def remove_track_from_playlist(playlist_id: str, track_id: str):
+    playlists = load_playlists()
+    found = None
+    for pl in playlists:
+        if pl["id"] == playlist_id:
+            found = pl
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    found["track_ids"] = [tid for tid in found["track_ids"] if tid != track_id]
+    save_playlists(playlists)
+    return {"playlist": found}
 
 @app.post("/api/preview")
 def preview_url(req: PreviewRequest):

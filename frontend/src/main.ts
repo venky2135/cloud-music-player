@@ -7,13 +7,19 @@ interface MusicNotificationPluginType {
     artist: string;
     isPlaying: boolean;
     thumbnailUrl?: string;
+    duration?: number;
+    position?: number;
+  }): Promise<void>;
+  setPosition(options: {
+    position: number;
+    isPlaying: boolean;
   }): Promise<void>;
   clear(): Promise<void>;
   checkPermissions(): Promise<{ notifications: string }>;
   requestPermissions(options: { permissions: string[] }): Promise<{ notifications: string }>;
   addListener(
     eventName: 'musicControlsAction',
-    listenerFunc: (data: { action: 'play' | 'pause' | 'next' | 'previous' }) => void
+    listenerFunc: (data: { action: 'play' | 'pause' | 'next' | 'previous' | 'seek'; time?: number }) => void
   ): Promise<any>;
 }
 
@@ -40,6 +46,13 @@ interface CloudConfig {
   youtube_cookies?: string;
 }
 
+interface Playlist {
+  id: string;
+  name: string;
+  track_ids: string[];
+  created_at: number;
+}
+
 const RENDER_BACKEND = 'https://cloud-music-player-wzd5.onrender.com';
 // In dev (port 5173) → local backend. In Capacitor native app or prod → Render backend.
 const API_BASE = window.location.port === '5173' ? 'http://127.0.0.1:8000' : RENDER_BACKEND;
@@ -53,7 +66,9 @@ class MusicPlayerApp {
   private volume = 0.8;
   private isMuted = false;
   private searchQuery = '';
-  private activeFilter: 'all' | 'liked' = 'all';
+  private activeFilter: 'all' | 'liked' | 'playlist' = 'all';
+  private activePlaylistId: string | null = null;
+  private playlists: Playlist[] = [];
   private favorites = new Set<string>(
     JSON.parse(localStorage.getItem('soundvault_favs') || '[]')
   );
@@ -77,12 +92,14 @@ class MusicPlayerApp {
     this.audio.volume = this.volume;
 
     this.renderShell();
+    this.renderFilterPills();
     this.attachListeners();
     this.initAudioEvents();
     this.initKeyboard();
     this.initNativeMusicControls();
     this.fetchConfig();
     this.fetchTracks();
+    this.fetchPlaylists();
   }
 
   // ──────────────────────────────────────────
@@ -160,7 +177,7 @@ class MusicPlayerApp {
           </div>
 
           <!-- Filter Pills -->
-          <div class="filter-row">
+          <div class="filter-row" id="filter-row">
             <button class="pill active" id="pill-all">All</button>
             <button class="pill" id="pill-liked">Liked Songs</button>
           </div>
@@ -416,6 +433,90 @@ class MusicPlayerApp {
 
       <!-- ═══ TOAST ZONE ═══ -->
       <div class="toast-zone" id="toast-zone" aria-live="polite"></div>
+
+      <!-- ═══ CREATE PLAYLIST MODAL ═══ -->
+      <div class="modal-overlay" id="modal-new-playlist" role="dialog" aria-modal="true" aria-label="Create playlist">
+        <div class="modal-card">
+          <div class="modal-handle"></div>
+          <div class="modal-header">
+            <div class="modal-title-row">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M3 6h18M3 12h12M3 18h8"/><circle cx="19" cy="18" r="3"/><path d="M19 15v3l2 1"/>
+              </svg>
+              <span class="modal-title-text">New Playlist</span>
+            </div>
+            <button class="btn-close" id="btn-close-new-playlist" aria-label="Close">&#x2715;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="form-label" for="new-playlist-name">Playlist Name</label>
+              <input type="text" id="new-playlist-name" class="form-input" placeholder="My awesome mix…" autocomplete="off" maxlength="80" />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-ghost" id="btn-cancel-new-playlist">Cancel</button>
+            <button class="btn-lime" id="btn-confirm-new-playlist">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              Create
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ ADD TO PLAYLIST MODAL ═══ -->
+      <div class="modal-overlay" id="modal-add-to-playlist" role="dialog" aria-modal="true" aria-label="Add to playlist">
+        <div class="modal-card">
+          <div class="modal-handle"></div>
+          <div class="modal-header">
+            <div class="modal-title-row">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 6h18M3 12h12M3 18h8"/>
+              </svg>
+              <span class="modal-title-text">Add to Playlist</span>
+            </div>
+            <button class="btn-close" id="btn-close-add-playlist" aria-label="Close">&#x2715;</button>
+          </div>
+          <div class="modal-body" style="gap:8px;">
+            <div id="add-to-playlist-list" style="display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto;">
+              <!-- injected by renderAddToPlaylistList() -->
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-ghost" id="btn-cancel-add-playlist">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ RENAME PLAYLIST MODAL ═══ -->
+      <div class="modal-overlay" id="modal-rename-playlist" role="dialog" aria-modal="true" aria-label="Rename playlist">
+        <div class="modal-card">
+          <div class="modal-handle"></div>
+          <div class="modal-header">
+            <div class="modal-title-row">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+              <span class="modal-title-text">Rename Playlist</span>
+            </div>
+            <button class="btn-close" id="btn-close-rename-playlist" aria-label="Close">&#x2715;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="form-label" for="rename-playlist-input">New Name</label>
+              <input type="text" id="rename-playlist-input" class="form-input" placeholder="Playlist name…" autocomplete="off" maxlength="80" />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-ghost" id="btn-cancel-rename-playlist">Cancel</button>
+            <button class="btn-lime" id="btn-confirm-rename-playlist">
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
     `;
   }
 
@@ -508,7 +609,10 @@ class MusicPlayerApp {
     this.$('seek-bar').addEventListener('click', (e) => {
       const rect = this.$('seek-bar').getBoundingClientRect();
       const pct = (e.clientX - rect.left) / rect.width;
-      if (this.audio.duration) this.audio.currentTime = pct * this.audio.duration;
+      if (this.audio.duration) {
+        this.audio.currentTime = pct * this.audio.duration;
+        this.syncNativePosition();
+      }
     });
 
     // ── Volume ──
@@ -529,6 +633,38 @@ class MusicPlayerApp {
     this.$('np-fav').addEventListener('click', () => {
       if (this.currentTrack) this.toggleFav(this.currentTrack.id);
     });
+
+    // ── Create Playlist modal ──
+    const closeNewPl = () => this.$('modal-new-playlist').classList.remove('active');
+
+    this.$('btn-close-new-playlist').addEventListener('click', closeNewPl);
+    this.$('btn-cancel-new-playlist').addEventListener('click', closeNewPl);
+    this.$('modal-new-playlist').addEventListener('click', (e) => {
+      if (e.target === this.$('modal-new-playlist')) closeNewPl();
+    });
+    this.$<HTMLInputElement>('new-playlist-name').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this.handleCreatePlaylist();
+    });
+    this.$('btn-confirm-new-playlist').addEventListener('click', () => this.handleCreatePlaylist());
+
+    // ── Add to Playlist modal ──
+    const closeAddPl = () => this.$('modal-add-to-playlist').classList.remove('active');
+    this.$('btn-close-add-playlist').addEventListener('click', closeAddPl);
+    this.$('btn-cancel-add-playlist').addEventListener('click', closeAddPl);
+    this.$('modal-add-to-playlist').addEventListener('click', (e) => {
+      if (e.target === this.$('modal-add-to-playlist')) closeAddPl();
+    });
+
+    // ── Rename Playlist modal ──
+    const closeRenamePl = () => this.$('modal-rename-playlist').classList.remove('active');
+    this.$('btn-close-rename-playlist').addEventListener('click', closeRenamePl);
+    this.$('btn-cancel-rename-playlist').addEventListener('click', closeRenamePl);
+    this.$('modal-rename-playlist').addEventListener('click', (e) => {
+      if (e.target === this.$('modal-rename-playlist')) closeRenamePl();
+    });
+    this.$<HTMLInputElement>('rename-playlist-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') (this.$('btn-confirm-rename-playlist') as HTMLButtonElement).click();
+    });
   }
 
   // ──────────────────────────────────────────
@@ -548,6 +684,14 @@ class MusicPlayerApp {
       if (tot > 0 && cur >= tot - 0.35 && !this.isAutoAdvancing) {
         this.handleTrackEnded();
       }
+    });
+
+    this.audio.addEventListener('durationchange', () => {
+      this.syncNativeMusicNotification();
+    });
+
+    this.audio.addEventListener('seeked', () => {
+      this.syncNativePosition();
     });
 
     this.audio.addEventListener('ended', () => {
@@ -598,7 +742,7 @@ class MusicPlayerApp {
     if (this.repeatMode === 'one') {
       this.audio.currentTime = 0;
       const p = this.audio.play();
-      if (p !== undefined) p.catch(() => {});
+      if (p !== undefined) p.catch(() => { });
       this.isAutoAdvancing = false;
     } else {
       this.nextTrack(true);
@@ -682,11 +826,19 @@ class MusicPlayerApp {
   // FILTER
   // ──────────────────────────────────────────
 
-  private setFilter(f: 'all' | 'liked') {
+  private setFilter(f: 'all' | 'liked' | 'playlist', plId?: string) {
     this.activeFilter = f;
+    this.activePlaylistId = plId ?? null;
     this.$('pill-all').classList.toggle('active', f === 'all');
     this.$('pill-liked').classList.toggle('active', f === 'liked');
+    // Playlist pills toggled by renderFilterPills
+    this.renderFilterPills();
     this.renderTrackList();
+  }
+
+  private getActivePlaylists(): Playlist | null {
+    if (this.activeFilter !== 'playlist' || !this.activePlaylistId) return null;
+    return this.playlists.find(p => p.id === this.activePlaylistId) ?? null;
   }
 
   private getFiltered(): Track[] {
@@ -698,6 +850,10 @@ class MusicPlayerApp {
         t.artist.toLowerCase().includes(q);
       if (!matchSearch) return false;
       if (this.activeFilter === 'liked') return this.favorites.has(t.id);
+      if (this.activeFilter === 'playlist') {
+        const pl = this.getActivePlaylists();
+        return pl ? pl.track_ids.includes(t.id) : false;
+      }
       return true;
     });
   }
@@ -727,7 +883,7 @@ class MusicPlayerApp {
           this.audio.currentTime = details.seekTime;
         }
       });
-    } catch (_) {}
+    } catch (_) { }
   }
 
   private initNativeMusicControls() {
@@ -736,10 +892,10 @@ class MusicPlayerApp {
     try {
       MusicNotification.checkPermissions().then((status) => {
         if (status.notifications !== 'granted') {
-          MusicNotification.requestPermissions({ permissions: ['notifications'] }).catch(() => {});
+          MusicNotification.requestPermissions({ permissions: ['notifications'] }).catch(() => { });
         }
-      }).catch(() => {});
-    } catch (_) {}
+      }).catch(() => { });
+    } catch (_) { }
 
     try {
       MusicNotification.addListener('musicControlsAction', (data) => {
@@ -757,9 +913,14 @@ class MusicPlayerApp {
           case 'previous':
             this.prevTrack();
             break;
+          case 'seek':
+            if (typeof data.time === 'number' && !isNaN(data.time)) {
+              this.audio.currentTime = data.time;
+            }
+            break;
         }
       });
-    } catch (_) {}
+    } catch (_) { }
   }
 
   private syncNativeMusicNotification() {
@@ -769,13 +930,37 @@ class MusicPlayerApp {
         ? this.resolveMediaUrl(this.currentTrack.thumbnail)
         : '';
 
+      const dur = this.audio.duration && !isNaN(this.audio.duration) && this.audio.duration > 0
+        ? this.audio.duration
+        : (this.currentTrack.duration || 0);
+
+      const pos = this.audio.currentTime && !isNaN(this.audio.currentTime)
+        ? this.audio.currentTime
+        : 0;
+
       MusicNotification.update({
         title: this.currentTrack.title || 'Unknown Track',
         artist: this.currentTrack.artist || 'poori',
         isPlaying: this.isPlaying,
         thumbnailUrl: thumb,
+        duration: dur,
+        position: pos,
       }).catch((e) => console.warn('MusicNotification update failed:', e));
-    } catch (_) {}
+    } catch (_) { }
+  }
+
+  private syncNativePosition() {
+    if (!Capacitor.isNativePlatform() || !this.currentTrack) return;
+    try {
+      const pos = this.audio.currentTime && !isNaN(this.audio.currentTime)
+        ? this.audio.currentTime
+        : 0;
+
+      MusicNotification.setPosition({
+        position: pos,
+        isPlaying: this.isPlaying,
+      }).catch(() => { });
+    } catch (_) { }
   }
 
   private playTrack(index: number) {
@@ -823,7 +1008,7 @@ class MusicPlayerApp {
       this.audio.pause();
     } else {
       const p = this.audio.play();
-      if (p !== undefined) p.catch(() => {});
+      if (p !== undefined) p.catch(() => { });
     }
   }
 
@@ -979,6 +1164,54 @@ class MusicPlayerApp {
   }
 
   // ──────────────────────────────────────────
+  // FILTER PILL RENDER
+  // ──────────────────────────────────────────
+
+  private renderFilterPills() {
+    const row = this.$('filter-row');
+    // Build pills HTML
+    const likedCount = this.tracks.filter(t => this.favorites.has(t.id)).length;
+    const plPills = this.playlists.map(pl => `
+      <button class="pill${this.activeFilter === 'playlist' && this.activePlaylistId === pl.id ? ' active' : ''}"
+              data-pl-id="${pl.id}" id="pill-pl-${pl.id}">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M3 6h18M3 12h12M3 18h8"/>
+        </svg>
+        ${pl.name}
+        <span class="pill-count">${pl.track_ids.length}</span>
+      </button>
+    `).join('');
+
+    row.innerHTML = `
+      <button class="pill${this.activeFilter === 'all' ? ' active' : ''}" id="pill-all">All</button>
+      <button class="pill${this.activeFilter === 'liked' ? ' active' : ''}" id="pill-liked">
+        Liked Songs
+        ${likedCount > 0 ? `<span class="pill-count">${likedCount}</span>` : ''}
+      </button>
+      ${plPills}
+      <button class="pill btn-new-pl" id="pill-btn-new-pl" title="Create new playlist">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        New Playlist
+      </button>
+    `;
+
+    // Re-attach pill events
+    this.$('pill-all').addEventListener('click', () => this.setFilter('all'));
+    this.$('pill-liked').addEventListener('click', () => this.setFilter('liked'));
+    this.$('pill-btn-new-pl').addEventListener('click', () => {
+      this.$<HTMLInputElement>('new-playlist-name').value = '';
+      this.$('modal-new-playlist').classList.add('active');
+      setTimeout(() => this.$<HTMLInputElement>('new-playlist-name').focus(), 80);
+    });
+    this.playlists.forEach(pl => {
+      const btn = document.getElementById(`pill-pl-${pl.id}`);
+      if (btn) btn.addEventListener('click', () => this.setFilter('playlist', pl.id));
+    });
+  }
+
+  // ──────────────────────────────────────────
   // TRACK LIST RENDER
   // ──────────────────────────────────────────
 
@@ -986,23 +1219,67 @@ class MusicPlayerApp {
     const container = this.$('track-list');
     const list = this.getFiltered();
     const count = list.length;
+    const isPlaylistView = this.activeFilter === 'playlist';
+    const activePl = this.getActivePlaylists();
 
-    if (count === 0) {
-      container.innerHTML = `
-        <div class="empty-state">
-          <span class="empty-icon">🎧</span>
-          <h3>${this.activeFilter === 'liked' ? 'No liked songs yet' : 'No songs found'}</h3>
-          <p>${
-            this.activeFilter === 'liked'
-              ? 'Heart a track to see it here'
-              : 'Tap + to download music from a YouTube or direct audio URL'
-          }</p>
+    // Build playlist header card if in playlist view
+    let headerHtml = '';
+    if (isPlaylistView && activePl) {
+      headerHtml = `
+        <div class="playlist-header-card" id="pl-header-card">
+          <div class="playlist-header-top">
+            <div class="playlist-icon-badge">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 6h18M3 12h12M3 18h8"/>
+              </svg>
+            </div>
+            <div class="playlist-header-details">
+              <div class="playlist-badge-tag">Playlist</div>
+              <div class="playlist-header-name">${activePl.name}</div>
+              <div class="playlist-header-meta">${activePl.track_ids.length} song${activePl.track_ids.length !== 1 ? 's' : ''}</div>
+            </div>
+          </div>
+          <div class="playlist-header-actions">
+            <button class="btn-pl-play" id="pl-hdr-play" ${count === 0 ? 'disabled' : ''}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Play All
+            </button>
+            <button class="btn-pl-action" id="pl-hdr-rename">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+              Rename
+            </button>
+            <button class="btn-pl-action del icon-only" id="pl-hdr-delete" title="Delete playlist">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+          </div>
         </div>
       `;
+    }
+
+    if (count === 0) {
+      const emptyMsg = isPlaylistView
+        ? { icon: '🎵', title: 'Playlist is empty', sub: 'Add songs from the All tab using the + button on each track' }
+        : this.activeFilter === 'liked'
+          ? { icon: '♥', title: 'No liked songs yet', sub: 'Heart a track to see it here' }
+          : { icon: '🎧', title: 'No songs found', sub: 'Tap + to download music from a YouTube or direct audio URL' };
+
+      container.innerHTML = headerHtml + `
+        <div class="empty-state">
+          <span class="empty-icon">${emptyMsg.icon}</span>
+          <h3>${emptyMsg.title}</h3>
+          <p>${emptyMsg.sub}</p>
+        </div>
+      `;
+      this.attachPlaylistHeaderEvents(activePl);
       return;
     }
 
-    container.innerHTML = list
+    container.innerHTML = headerHtml + list
       .map((track, idx) => {
         const isCurrent = this.currentTrack?.id === track.id;
         const isFav = this.favorites.has(track.id);
@@ -1030,25 +1307,43 @@ class MusicPlayerApp {
                   <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
                 </svg>
               </button>
-              <button class="track-icon-btn del del-btn"
-                      data-id="${track.id}"
-                      title="Delete"
-                      aria-label="Delete">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                </svg>
-              </button>
+              ${isPlaylistView ? `
+                <button class="track-icon-btn remove-from-pl-btn"
+                        data-id="${track.id}"
+                        title="Remove from playlist"
+                        aria-label="Remove from playlist">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                </button>
+              ` : `
+                <button class="track-icon-btn add-to-pl-btn"
+                        data-id="${track.id}"
+                        title="Add to playlist"
+                        aria-label="Add to playlist">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M3 12h12M3 18h8"/><line x1="19" y1="15" x2="19" y2="21"/><line x1="16" y1="18" x2="22" y2="18"/>
+                  </svg>
+                </button>
+                <button class="track-icon-btn del del-btn"
+                        data-id="${track.id}"
+                        title="Delete"
+                        aria-label="Delete">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </button>
+              `}
               <button class="track-play-btn play-track-btn"
                       data-index="${idx}"
                       title="${isCurrent && this.isPlaying ? 'Pause' : 'Play'}"
                       aria-label="${isCurrent && this.isPlaying ? 'Pause' : 'Play'}">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                  ${
-                    isCurrent && this.isPlaying
-                      ? `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`
-                      : `<polygon points="5 3 19 12 5 21 5 3"/>`
-                  }
+                  ${isCurrent && this.isPlaying
+            ? `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`
+            : `<polygon points="5 3 19 12 5 21 5 3"/>`
+          }
                 </svg>
               </button>
             </div>
@@ -1056,6 +1351,9 @@ class MusicPlayerApp {
         `;
       })
       .join('');
+
+    // Playlist header button events
+    this.attachPlaylistHeaderEvents(activePl);
 
     // Row click → play + open Now Playing on mobile
     container.querySelectorAll('.track-item').forEach((row) => {
@@ -1095,7 +1393,7 @@ class MusicPlayerApp {
       });
     });
 
-    // Delete buttons
+    // Delete buttons (only in 'all' view)
     container.querySelectorAll('.del-btn').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -1105,6 +1403,44 @@ class MusicPlayerApp {
         }
       });
     });
+
+    // Add to playlist buttons (only outside playlist view)
+    container.querySelectorAll('.add-to-pl-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const trackId = (btn as HTMLElement).dataset.id!;
+        this.openAddToPlaylistModal(trackId);
+      });
+    });
+
+    // Remove from playlist buttons (only in playlist view)
+    container.querySelectorAll('.remove-from-pl-btn').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const trackId = (btn as HTMLElement).dataset.id!;
+        if (activePl) await this.removeTrackFromPlaylist(activePl.id, trackId);
+      });
+    });
+  }
+
+  private attachPlaylistHeaderEvents(activePl: Playlist | null) {
+    if (!activePl) return;
+    const playBtn = document.getElementById('pl-hdr-play');
+    const renameBtn = document.getElementById('pl-hdr-rename');
+    const deleteBtn = document.getElementById('pl-hdr-delete');
+
+    if (playBtn) {
+      playBtn.addEventListener('click', () => {
+        if (this.getFiltered().length > 0) this.playTrack(0);
+        if (window.innerWidth < 768) this.openNowPlaying();
+      });
+    }
+    if (renameBtn) {
+      renameBtn.addEventListener('click', () => this.openRenamePlaylistModal(activePl));
+    }
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', () => this.handleDeletePlaylist(activePl.id));
+    }
   }
 
   private async deleteTrack(id: string) {
@@ -1120,7 +1456,7 @@ class MusicPlayerApp {
           this.$('np-active').classList.remove('visible');
           this.updateMiniPlayer();
           if (Capacitor.isNativePlatform()) {
-            MusicNotification.clear().catch(() => {});
+            MusicNotification.clear().catch(() => { });
           }
         }
         this.toast('Track removed');
@@ -1252,7 +1588,7 @@ class MusicPlayerApp {
         this.cloudConfig = await res.json();
         this.populateSettingsForm();
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   private populateSettingsForm() {
@@ -1302,6 +1638,7 @@ class MusicPlayerApp {
         this.tracks = (data.tracks || []).filter(
           (t: Track) => !t.is_stream && !t.id.startsWith('stream-')
         );
+        this.renderFilterPills();
         this.renderTrackList();
 
         // Pre-load first track info into now playing
@@ -1315,6 +1652,193 @@ class MusicPlayerApp {
     } catch (_) {
       // Backend not yet reachable — will retry on user action
     }
+  }
+
+  // ──────────────────────────────────────────
+  // PLAYLISTS
+  // ──────────────────────────────────────────
+
+  private async fetchPlaylists() {
+    try {
+      const res = await fetch(`${API_BASE}/api/playlists`);
+      if (res.ok) {
+        const data = await res.json();
+        this.playlists = data.playlists || [];
+        this.renderFilterPills();
+      }
+    } catch (_) { }
+  }
+
+  private async handleCreatePlaylist() {
+    const name = this.$<HTMLInputElement>('new-playlist-name').value.trim();
+    if (!name) {
+      this.toast('Please enter a playlist name', 'error');
+      return;
+    }
+    const btn = this.$<HTMLButtonElement>('btn-confirm-new-playlist');
+    btn.disabled = true;
+    try {
+      const res = await fetch(`${API_BASE}/api/playlists`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, track_ids: [] }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        this.playlists.push(data.playlist);
+        this.$('modal-new-playlist').classList.remove('active');
+        this.toast(`Playlist "${name}" created!`);
+        this.setFilter('playlist', data.playlist.id);
+      } else {
+        this.toast('Failed to create playlist', 'error');
+      }
+    } catch {
+      this.toast('Could not reach backend', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  private async handleDeletePlaylist(plId: string) {
+    const pl = this.playlists.find(p => p.id === plId);
+    if (!pl) return;
+    if (!confirm(`Delete playlist "${pl.name}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/playlists/${plId}`, { method: 'DELETE' });
+      if (res.ok) {
+        this.playlists = this.playlists.filter(p => p.id !== plId);
+        this.toast(`"${pl.name}" deleted`);
+        this.setFilter('all');
+      } else {
+        this.toast('Failed to delete playlist', 'error');
+      }
+    } catch {
+      this.toast('Could not reach backend', 'error');
+    }
+  }
+
+  private async removeTrackFromPlaylist(plId: string, trackId: string) {
+    try {
+      const res = await fetch(`${API_BASE}/api/playlists/${plId}/tracks/${trackId}`, { method: 'DELETE' });
+      if (res.ok) {
+        const data = await res.json();
+        const idx = this.playlists.findIndex(p => p.id === plId);
+        if (idx >= 0) this.playlists[idx] = data.playlist;
+        this.toast('Removed from playlist');
+        this.renderFilterPills();
+        this.renderTrackList();
+      } else {
+        this.toast('Failed to remove from playlist', 'error');
+      }
+    } catch {
+      this.toast('Could not reach backend', 'error');
+    }
+  }
+
+  private openAddToPlaylistModal(trackId: string) {
+    // Populate playlist list
+    const listEl = this.$('add-to-playlist-list');
+    if (this.playlists.length === 0) {
+      listEl.innerHTML = `
+        <div style="text-align:center;padding:20px 0;color:var(--text-3);font-size:13px;">
+          No playlists yet. Create one first!
+        </div>
+      `;
+    } else {
+      listEl.innerHTML = this.playlists.map(pl => {
+        const alreadyIn = pl.track_ids.includes(trackId);
+        return `
+          <button class="add-to-pl-item${alreadyIn ? ' already-in' : ''}"
+                  data-pl-id="${pl.id}"
+                  data-track-id="${trackId}"
+                  style="display:flex;align-items:center;gap:10px;padding:10px 12px;
+                         border-radius:var(--radius-md);background:${alreadyIn ? 'var(--accent-bg)' : 'var(--surface-2)'};
+                         border:1.5px solid ${alreadyIn ? 'rgba(200,255,0,0.2)' : 'var(--border)'};
+                         color:${alreadyIn ? 'var(--accent)' : 'var(--text)'};
+                         font-size:13.5px;font-weight:600;text-align:left;
+                         transition:all 0.15s;width:100%;cursor:${alreadyIn ? 'default' : 'pointer'};">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h12M3 18h8"/>
+            </svg>
+            <span style="flex:1">${pl.name}</span>
+            <span style="font-size:11px;color:var(--text-3);font-weight:500">${pl.track_ids.length} songs</span>
+            ${alreadyIn ? `<svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><polyline points="20 6 9 17 4 12"/></svg>` : ''}
+          </button>
+        `;
+      }).join('');
+
+      listEl.querySelectorAll('.add-to-pl-item:not(.already-in)').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const plId = (btn as HTMLElement).dataset.plId!;
+          const tId = (btn as HTMLElement).dataset.trackId!;
+          await this.addTrackToPlaylist(plId, tId);
+          this.$('modal-add-to-playlist').classList.remove('active');
+        });
+      });
+    }
+    this.$('modal-add-to-playlist').classList.add('active');
+  }
+
+  private async addTrackToPlaylist(plId: string, trackId: string) {
+    try {
+      const res = await fetch(`${API_BASE}/api/playlists/${plId}/tracks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track_id: trackId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const idx = this.playlists.findIndex(p => p.id === plId);
+        if (idx >= 0) this.playlists[idx] = data.playlist;
+        const pl = this.playlists.find(p => p.id === plId);
+        this.toast(`Added to "${pl?.name ?? 'playlist'}"`);
+        this.renderFilterPills();
+      } else {
+        this.toast('Failed to add to playlist', 'error');
+      }
+    } catch {
+      this.toast('Could not reach backend', 'error');
+    }
+  }
+
+  private openRenamePlaylistModal(pl: Playlist) {
+    const input = this.$<HTMLInputElement>('rename-playlist-input');
+    input.value = pl.name;
+    this.$('modal-rename-playlist').classList.add('active');
+    setTimeout(() => { input.focus(); input.select(); }, 80);
+
+    const confirmBtn = this.$<HTMLButtonElement>('btn-confirm-rename-playlist');
+    // Clone to remove old listeners
+    const newBtn = confirmBtn.cloneNode(true) as HTMLButtonElement;
+    confirmBtn.parentNode!.replaceChild(newBtn, confirmBtn);
+
+    newBtn.addEventListener('click', async () => {
+      const newName = input.value.trim();
+      if (!newName) { this.toast('Name cannot be empty', 'error'); return; }
+      newBtn.disabled = true;
+      try {
+        const res = await fetch(`${API_BASE}/api/playlists/${pl.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newName }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const idx = this.playlists.findIndex(p => p.id === pl.id);
+          if (idx >= 0) this.playlists[idx] = data.playlist;
+          this.$('modal-rename-playlist').classList.remove('active');
+          this.toast(`Renamed to "${newName}"`);
+          this.renderFilterPills();
+          this.renderTrackList();
+        } else {
+          this.toast('Failed to rename playlist', 'error');
+        }
+      } catch {
+        this.toast('Could not reach backend', 'error');
+      } finally {
+        newBtn.disabled = false;
+      }
+    });
   }
 }
 
