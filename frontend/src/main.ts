@@ -84,6 +84,14 @@ class MusicPlayerApp {
   private audio: HTMLAudioElement;
   private isAutoAdvancing = false;
 
+  // Sleep timer state
+  private sleepTimerTargetTime: number | null = null;
+  private sleepTimerType: 'duration' | 'end-of-track' | null = null;
+  private sleepTimerIntervalId: number | null = null;
+  private sleepTimerFadeOut = true;
+  private sleepTimerOriginalVolume = 0.8;
+  private isFadingVolume = false;
+
   constructor() {
     this.audio = new Audio();
     this.audio.preload = 'auto';
@@ -152,12 +160,16 @@ class MusicPlayerApp {
 
           <!-- Header -->
           <div class="lib-header">
-            <button class="icon-btn" id="btn-open-settings" title="Storage settings" aria-label="Settings">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-              </svg>
-            </button>
+            <div class="menu-btn-wrap">
+              <button class="icon-btn" id="btn-menu" title="Menu" aria-label="Open menu">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <line x1="3" y1="6" x2="21" y2="6"/>
+                  <line x1="3" y1="12" x2="21" y2="12"/>
+                  <line x1="3" y1="18" x2="21" y2="18"/>
+                </svg>
+              </button>
+              <span class="menu-badge" id="menu-timer-badge" style="display:none;"></span>
+            </div>
             <h1 class="lib-header-title">My Music</h1>
             <button class="icon-btn accent" id="btn-open-dl" title="Add song from URL" aria-label="Add song">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -224,11 +236,19 @@ class MusicPlayerApp {
               </svg>
             </button>
             <span class="np-header-title">Now Playing</span>
-            <button class="np-fav-btn" id="np-fav" title="Like / Unlike" aria-label="Like">
-              <svg id="np-fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
-              </svg>
-            </button>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button class="np-sleep-btn" id="np-sleep-btn" title="Sleep timer" aria-label="Sleep timer">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+                </svg>
+                <span class="np-sleep-badge" id="np-sleep-badge" style="display:none;"></span>
+              </button>
+              <button class="np-fav-btn" id="np-fav" title="Like / Unlike" aria-label="Like">
+                <svg id="np-fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+                </svg>
+              </button>
+            </div>
           </div>
 
           <!-- Idle -->
@@ -517,6 +537,134 @@ class MusicPlayerApp {
           </div>
         </div>
       </div>
+
+      <!-- ═══ HAMBURGER DRAWER MENU ═══ -->
+      <div class="drawer-overlay" id="drawer-menu" role="dialog" aria-modal="true" aria-label="Main menu">
+        <div class="drawer-panel">
+          <div class="drawer-header">
+            <div class="drawer-brand">
+              <img class="drawer-logo-img" src="/logo.png" alt="Poori" />
+              <span class="drawer-title">Poori</span>
+            </div>
+            <button class="btn-close" id="btn-close-menu" aria-label="Close menu">&#x2715;</button>
+          </div>
+
+          <div class="drawer-content">
+            <div class="drawer-section-label">Options</div>
+
+            <button class="drawer-item" id="menu-item-timer">
+              <div class="drawer-item-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+                </svg>
+              </div>
+              <div class="drawer-item-text">
+                <div class="drawer-item-title">Sleep Timer</div>
+                <div class="drawer-item-subtitle" id="menu-timer-sub">Stop music automatically</div>
+              </div>
+              <span class="drawer-pill" id="menu-timer-pill" style="display:none;">Active</span>
+            </button>
+
+            <button class="drawer-item" id="menu-item-settings">
+              <div class="drawer-item-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+              </div>
+              <div class="drawer-item-text">
+                <div class="drawer-item-title">Cloud Storage &amp; Settings</div>
+                <div class="drawer-item-subtitle">Supabase, cookies, storage provider</div>
+              </div>
+            </button>
+          </div>
+
+          <div class="drawer-footer">
+            <span>Poori</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ SLEEP TIMER MODAL ═══ -->
+      <div class="modal-overlay" id="modal-sleep-timer" role="dialog" aria-modal="true" aria-label="Sleep timer">
+        <div class="modal-card">
+          <div class="modal-handle"></div>
+          <div class="modal-header">
+            <div class="modal-title-row">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+              </svg>
+              <span class="modal-title-text">Sleep Timer</span>
+            </div>
+            <button class="btn-close" id="btn-close-sleep-timer" aria-label="Close">&#x2715;</button>
+          </div>
+
+          <div class="modal-body" style="gap:14px;">
+            <!-- Active countdown card (minimalized) -->
+            <div class="timer-active-card" id="timer-active-card" style="display:none;">
+              <div class="tac-left">
+                <svg class="tac-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+                </svg>
+                <span class="tac-label" id="tac-status-label">Stopping in <strong id="timer-active-time">--:--</strong></span>
+              </div>
+              <div class="tac-actions">
+                <button class="btn-preset-mini" id="timer-btn-add5" title="Add 5 minutes">+5m</button>
+                <button class="btn-preset-mini" id="timer-btn-add15" title="Add 15 minutes">+15m</button>
+                <button class="btn-cancel-timer" id="timer-btn-cancel">Turn Off</button>
+              </div>
+            </div>
+
+            <!-- Presets grid -->
+            <div class="form-group">
+              <label class="form-label">Set Timer For</label>
+              <div class="timer-presets-grid">
+                <button class="btn-preset" data-minutes="5">5 min</button>
+                <button class="btn-preset" data-minutes="10">10 min</button>
+                <button class="btn-preset" data-minutes="15">15 min</button>
+                <button class="btn-preset" data-minutes="30">30 min</button>
+                <button class="btn-preset" data-minutes="45">45 min</button>
+                <button class="btn-preset" data-minutes="60">1 hour</button>
+              </div>
+            </div>
+
+            <!-- End of current track option -->
+            <button class="btn-preset-wide" id="timer-preset-end-track">
+              <div class="bpw-left">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+                </svg>
+                <span>End of current track</span>
+              </div>
+              <span class="bpw-tag" id="timer-end-track-tag">Play until song ends</span>
+            </button>
+
+            <!-- Custom duration -->
+            <div class="form-group">
+              <label class="form-label" for="custom-timer-min">Custom Duration</label>
+              <div class="custom-timer-row">
+                <input type="number" id="custom-timer-min" class="form-input" min="1" max="720" placeholder="e.g. 25" />
+                <span class="custom-timer-unit">minutes</span>
+                <button class="btn-inspect" id="btn-set-custom-timer">Start</button>
+              </div>
+            </div>
+
+            <!-- Fade out option -->
+            <label class="toggle-option">
+              <input type="checkbox" id="timer-fade-checkbox" checked />
+              <span class="toggle-box"></span>
+              <div class="toggle-text">
+                <span class="toggle-title">Gentle fade out</span>
+                <span class="toggle-desc">Gradually lowers volume over the final 15 seconds</span>
+              </div>
+            </label>
+          </div>
+
+          <div class="modal-footer">
+            <button class="btn-ghost" id="btn-cancel-sleep-modal">Close</button>
+          </div>
+        </div>
+      </div>
     `;
   }
 
@@ -560,11 +708,25 @@ class MusicPlayerApp {
     });
     this.$('btn-download').addEventListener('click', () => this.handleDownload());
 
+    // ── Hamburger Menu Drawer ──
+    this.$('btn-menu').addEventListener('click', () => this.openMenu());
+    this.$('btn-close-menu').addEventListener('click', () => this.closeMenu());
+    this.$('drawer-menu').addEventListener('click', (e) => {
+      if (e.target === this.$('drawer-menu')) this.closeMenu();
+    });
+    this.$('menu-item-settings').addEventListener('click', () => {
+      this.closeMenu();
+      openSettings();
+    });
+    this.$('menu-item-timer').addEventListener('click', () => {
+      this.closeMenu();
+      this.openSleepTimerModal();
+    });
+
     // ── Settings modal ──
     const openSettings = () => this.$('modal-settings').classList.add('active');
     const closeSettings = () => this.$('modal-settings').classList.remove('active');
 
-    this.$('btn-open-settings').addEventListener('click', openSettings);
     this.$('btn-close-settings').addEventListener('click', closeSettings);
     this.$('btn-cancel-settings').addEventListener('click', closeSettings);
     this.$('modal-settings').addEventListener('click', (e) => {
@@ -572,6 +734,53 @@ class MusicPlayerApp {
     });
 
     this.$('btn-save-settings').addEventListener('click', () => this.handleSaveSettings());
+
+    // ── Sleep Timer modal & controls ──
+    this.$('np-sleep-btn').addEventListener('click', () => this.openSleepTimerModal());
+    this.$('btn-close-sleep-timer').addEventListener('click', () => this.closeSleepTimerModal());
+    this.$('btn-cancel-sleep-modal').addEventListener('click', () => this.closeSleepTimerModal());
+    this.$('modal-sleep-timer').addEventListener('click', (e) => {
+      if (e.target === this.$('modal-sleep-timer')) this.closeSleepTimerModal();
+    });
+
+    // Presets (5, 10, 15, 30, 45, 60 min)
+    document.querySelectorAll<HTMLButtonElement>('.timer-presets-grid .btn-preset').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mins = parseInt(btn.dataset.minutes || '0');
+        if (mins > 0) this.setSleepTimer(mins);
+      });
+    });
+
+    // End of track preset
+    this.$('timer-preset-end-track').addEventListener('click', () => {
+      this.setSleepTimerEndOfTrack();
+    });
+
+    // Custom duration
+    this.$('btn-set-custom-timer').addEventListener('click', () => {
+      const input = this.$<HTMLInputElement>('custom-timer-min');
+      const val = parseInt(input.value);
+      if (!val || val <= 0) {
+        this.toast('Please enter a valid number of minutes', 'error');
+        return;
+      }
+      this.setSleepTimer(val);
+      input.value = '';
+    });
+    this.$<HTMLInputElement>('custom-timer-min').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') (this.$('btn-set-custom-timer') as HTMLButtonElement).click();
+    });
+
+    // Active card buttons
+    this.$('timer-btn-add5').addEventListener('click', () => this.extendSleepTimer(5));
+    this.$('timer-btn-add15').addEventListener('click', () => this.extendSleepTimer(15));
+    this.$('timer-btn-cancel').addEventListener('click', () => this.cancelSleepTimer());
+
+    // Fade out checkbox
+    const fadeBox = this.$<HTMLInputElement>('timer-fade-checkbox');
+    fadeBox.addEventListener('change', () => {
+      this.sleepTimerFadeOut = fadeBox.checked;
+    });
 
     // ── Now playing mobile navigation ──
     this.$('np-back').addEventListener('click', () => this.closeNowPlaying());
@@ -619,6 +828,9 @@ class MusicPlayerApp {
     const volSlider = this.$<HTMLInputElement>('vol-slider');
     volSlider.addEventListener('input', () => {
       this.volume = parseFloat(volSlider.value);
+      if (!this.isFadingVolume) {
+        this.sleepTimerOriginalVolume = this.volume;
+      }
       this.audio.volume = this.volume;
       this.isMuted = this.volume === 0;
       this.updateVolIcon();
@@ -673,6 +885,8 @@ class MusicPlayerApp {
 
   private initAudioEvents() {
     this.audio.addEventListener('timeupdate', () => {
+      this.checkSleepTimer();
+
       const cur = this.audio.currentTime;
       const tot = this.audio.duration || 0;
       this.$('current-time').textContent = this.fmt(cur);
@@ -683,6 +897,12 @@ class MusicPlayerApp {
       // Mobile & streaming safeguard: if within 0.35s of track completion and stream finishes without firing 'ended'
       if (tot > 0 && cur >= tot - 0.35 && !this.isAutoAdvancing) {
         this.handleTrackEnded();
+      }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        this.checkSleepTimer();
       }
     });
 
@@ -739,6 +959,14 @@ class MusicPlayerApp {
     if (this.isAutoAdvancing) return;
     this.isAutoAdvancing = true;
 
+    if (this.sleepTimerType === 'end-of-track') {
+      this.cancelSleepTimer(false);
+      this.pauseAudio();
+      this.toast('Sleep timer ended at end of track 🌙');
+      this.isAutoAdvancing = false;
+      return;
+    }
+
     if (this.repeatMode === 'one') {
       this.audio.currentTime = 0;
       const p = this.audio.play();
@@ -777,6 +1005,7 @@ class MusicPlayerApp {
         case 'ArrowUp':
           e.preventDefault();
           this.volume = Math.min(this.volume + 0.05, 1);
+          if (!this.isFadingVolume) this.sleepTimerOriginalVolume = this.volume;
           this.audio.volume = this.volume;
           this.$<HTMLInputElement>('vol-slider').value = this.volume.toString();
           this.isMuted = false;
@@ -785,6 +1014,7 @@ class MusicPlayerApp {
         case 'ArrowDown':
           e.preventDefault();
           this.volume = Math.max(this.volume - 0.05, 0);
+          if (!this.isFadingVolume) this.sleepTimerOriginalVolume = this.volume;
           this.audio.volume = this.volume;
           this.$<HTMLInputElement>('vol-slider').value = this.volume.toString();
           this.isMuted = this.volume === 0;
@@ -1862,6 +2092,176 @@ class MusicPlayerApp {
         newBtn.disabled = false;
       }
     });
+  }
+
+  // ──────────────────────────────────────────
+  // MENU DRAWER & SLEEP TIMER
+  // ──────────────────────────────────────────
+
+  private openMenu() {
+    this.$('drawer-menu').classList.add('active');
+    this.updateSleepTimerUI();
+  }
+
+  private closeMenu() {
+    this.$('drawer-menu').classList.remove('active');
+  }
+
+  private openSleepTimerModal() {
+    this.$('modal-sleep-timer').classList.add('active');
+    this.updateSleepTimerUI();
+  }
+
+  private closeSleepTimerModal() {
+    this.$('modal-sleep-timer').classList.remove('active');
+  }
+
+  private setSleepTimer(minutes: number) {
+    if (minutes <= 0) return;
+    this.cancelSleepTimer(false);
+    this.sleepTimerOriginalVolume = this.volume;
+    this.sleepTimerTargetTime = Date.now() + minutes * 60 * 1000;
+    this.sleepTimerType = 'duration';
+    this.isFadingVolume = false;
+
+    this.startSleepTimerInterval();
+    this.updateSleepTimerUI();
+    this.toast(`Sleep timer set for ${minutes} min 🌙`);
+    this.closeSleepTimerModal();
+  }
+
+  private setSleepTimerEndOfTrack() {
+    this.cancelSleepTimer(false);
+    this.sleepTimerOriginalVolume = this.volume;
+    this.sleepTimerType = 'end-of-track';
+    this.sleepTimerTargetTime = null;
+    this.isFadingVolume = false;
+
+    this.updateSleepTimerUI();
+    this.toast('Sleep timer will stop at end of current song 🌙');
+    this.closeSleepTimerModal();
+  }
+
+  private extendSleepTimer(extraMinutes: number) {
+    if (this.sleepTimerType !== 'duration' || !this.sleepTimerTargetTime) {
+      this.setSleepTimer(extraMinutes);
+      return;
+    }
+    this.sleepTimerTargetTime += extraMinutes * 60 * 1000;
+    if (this.isFadingVolume) {
+      this.isFadingVolume = false;
+      this.audio.volume = this.sleepTimerOriginalVolume;
+    }
+    this.updateSleepTimerUI();
+    this.toast(`Added ${extraMinutes} min to sleep timer 🌙`);
+  }
+
+  private cancelSleepTimer(showToast = true) {
+    if (this.sleepTimerIntervalId) {
+      clearInterval(this.sleepTimerIntervalId);
+      this.sleepTimerIntervalId = null;
+    }
+    if (this.isFadingVolume) {
+      this.audio.volume = this.sleepTimerOriginalVolume;
+      this.isFadingVolume = false;
+    }
+    this.sleepTimerTargetTime = null;
+    this.sleepTimerType = null;
+
+    this.updateSleepTimerUI();
+    if (showToast) {
+      this.toast('Sleep timer turned off');
+    }
+  }
+
+  private startSleepTimerInterval() {
+    if (this.sleepTimerIntervalId) clearInterval(this.sleepTimerIntervalId);
+    this.sleepTimerIntervalId = window.setInterval(() => {
+      this.checkSleepTimer();
+    }, 1000);
+  }
+
+  private checkSleepTimer() {
+    if (this.sleepTimerType !== 'duration' || !this.sleepTimerTargetTime) return;
+
+    const remainingMs = this.sleepTimerTargetTime - Date.now();
+
+    if (remainingMs <= 0) {
+      this.triggerSleepTimerStop();
+      return;
+    }
+
+    // Handle smooth volume fade-out in final 15 seconds
+    if (this.sleepTimerFadeOut && remainingMs <= 15000) {
+      this.isFadingVolume = true;
+      const factor = Math.max(0, remainingMs / 15000);
+      this.audio.volume = Math.max(0, this.sleepTimerOriginalVolume * factor);
+    }
+
+    this.updateSleepTimerUI();
+  }
+
+  private triggerSleepTimerStop() {
+    if (this.sleepTimerIntervalId) {
+      clearInterval(this.sleepTimerIntervalId);
+      this.sleepTimerIntervalId = null;
+    }
+    this.sleepTimerTargetTime = null;
+    this.sleepTimerType = null;
+    this.isFadingVolume = false;
+
+    this.pauseAudio();
+    this.audio.volume = this.sleepTimerOriginalVolume;
+
+    this.updateSleepTimerUI();
+    this.toast('Sleep timer finished. Music paused 🌙');
+  }
+
+  private updateSleepTimerUI() {
+    const isDuration = this.sleepTimerType === 'duration' && !!this.sleepTimerTargetTime;
+    const isEndTrack = this.sleepTimerType === 'end-of-track';
+    const isActive = isDuration || isEndTrack;
+
+    // Badges on hamburger menu and now playing header
+    const menuBadge = this.$('menu-timer-badge');
+    const npSleepBadge = this.$('np-sleep-badge');
+    const npSleepBtn = this.$('np-sleep-btn');
+    if (menuBadge) menuBadge.style.display = isActive ? 'block' : 'none';
+    if (npSleepBadge) npSleepBadge.style.display = isActive ? 'block' : 'none';
+    if (npSleepBtn) npSleepBtn.classList.toggle('active', isActive);
+
+    // Format remaining time string
+    let timeStr = '--:--';
+    if (isDuration && this.sleepTimerTargetTime) {
+      const remSec = Math.max(0, Math.ceil((this.sleepTimerTargetTime - Date.now()) / 1000));
+      const m = Math.floor(remSec / 60);
+      const s = remSec % 60;
+      timeStr = `${m}:${s < 10 ? '0' : ''}${s}`;
+    } else if (isEndTrack) {
+      timeStr = 'End of song';
+    }
+
+    // Drawer menu active pill
+    const menuTimerPill = this.$('menu-timer-pill');
+    if (menuTimerPill) menuTimerPill.style.display = isActive ? 'inline-block' : 'none';
+
+    // Sleep Timer modal active card (minimalized)
+    const timerCard = this.$('timer-active-card');
+    const timerActiveTime = this.$('timer-active-time');
+    const tacStatusLabel = this.$('tac-status-label');
+    if (timerCard) timerCard.style.display = isActive ? 'flex' : 'none';
+    if (tacStatusLabel) {
+      if (isEndTrack) {
+        tacStatusLabel.innerHTML = 'Stopping at <strong>end of song</strong>';
+      } else {
+        tacStatusLabel.innerHTML = `Stopping in <strong id="timer-active-time">${timeStr}</strong>`;
+      }
+    } else if (timerActiveTime) {
+      timerActiveTime.textContent = timeStr;
+    }
+
+    const endTrackBtn = this.$('timer-preset-end-track');
+    if (endTrackBtn) endTrackBtn.classList.toggle('selected', isEndTrack);
   }
 }
 
